@@ -25,7 +25,26 @@ The split client decides where to route each read based on three rules, checked 
 
 Everything else goes to the cache.
 
-If you ever need a guaranteed-fresh read -- for example, to check a condition that must be current before a destructive action -- the Manager exposes `GetAPIReader()`. This returns a client that always talks to the API server directly. Use it rarely. If you're reaching for it often, you probably have a design problem.
+If you ever need a guaranteed-fresh read -- for example, to check a condition that must be current before a destructive action -- the Manager exposes `GetAPIReader()`. This returns a client that always talks to the API server directly.
+
+The [multigres-operator](https://github.com/multigres/multigres-operator) uses `GetAPIReader()` for a specific and instructive reason. The Shard controller needs to read external Secrets -- TLS certificates and credentials created by cert-manager or other external systems. These Secrets don't carry the operator's labels, so they're invisible to the label-filtered cache (more on that below). The [Shard reconciler stores the API reader](https://github.com/multigres/multigres-operator/blob/main/pkg/resource-handler/controller/shard/shard_controller.go) and uses it for these external reads:
+
+```go
+type ShardReconciler struct {
+    client.Client
+    APIReader client.Reader  // uncached, bypasses label filter
+    // ...
+}
+
+// In reconciliation:
+secret := &corev1.Secret{}
+if err := r.APIReader.Get(ctx, types.NamespacedName{
+    Name:      secretName,
+    Namespace: shard.Namespace,
+}, secret); err != nil { ... }
+```
+
+This is not about freshness. It's about visibility. The cached client can't see objects that were filtered out at the informer level. The API reader bypasses the cache entirely and hits the API server directly.
 
 ## What the Cache Actually Is
 
@@ -37,7 +56,7 @@ Three things follow from this design.
 
 First, the cache is eventually consistent. After you `client.Update()` an object, the next `client.Get()` might return the old version. The update goes to the API server, but the cache won't see the change until the informer's watch stream delivers it. In practice this delay is milliseconds, but it's real. Your Reconcile function handles this naturally -- it will be called again when the watch event arrives.
 
-Second, the cache is complete for watched types. It holds every object of every type you're watching, across all namespaces (unless you've configured namespace restrictions). This means `client.List()` against the cache returns the full set, not a paginated subset. There is no `Continue` token support in cache reads.
+Second, the cache is complete for watched types. It holds every object of every type you're watching, across all namespaces (unless you've configured namespace restrictions or label filters). This means `client.List()` against the cache returns the full set, not a paginated subset. There is no `Continue` token support in cache reads.
 
 Third, the cache creates API server load proportional to the number of watched types, not the number of reads. Watching 5 types means 5 watch connections, regardless of whether you read those objects 10 times per second or 10,000 times per second. Reads are free.
 
@@ -57,6 +76,36 @@ cache.Options{
 
 With this enabled, a `Get` or `List` for a type without an informer returns `ErrResourceNotCached` immediately instead of creating one. This forces explicit informer setup -- either by watching the type in a controller, or by calling `GetInformer()` directly. No surprises, no runaway memory.
 
+## Filtering the Cache: Label Selectors Per Type
+
+For operators that own child resources in shared namespaces, caching *every* object of a given type is wasteful. If your operator creates 50 Pods but the namespace has 5,000, you're caching 4,950 objects you'll never read.
+
+The `ByObject` cache option lets you filter per GVK. The [multigres-operator demonstrates this well](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go). It applies a label selector so that only objects managed by multigres are cached:
+
+```go
+managedBySelector := labels.SelectorFromSet(labels.Set{
+    "app.kubernetes.io/managed-by": "multigres-operator",
+})
+
+mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+    Cache: cache.Options{
+        ByObject: map[client.Object]cache.ByObject{
+            &corev1.Secret{}:      {Label: managedBySelector},
+            &appsv1.StatefulSet{}: {Label: managedBySelector},
+            &corev1.Service{}:     {Label: managedBySelector},
+            &corev1.Pod{}:         {Label: managedBySelector},
+            // ConfigMaps intentionally left unfiltered
+        },
+    },
+})
+```
+
+The informer for Secrets only watches Secrets with `app.kubernetes.io/managed-by: multigres-operator`. The LIST and WATCH calls include this label selector, so the API server only sends matching objects. Memory usage drops from "all Secrets in the cluster" to "Secrets this operator created."
+
+Notice that ConfigMaps are intentionally left unfiltered. The Shard controller watches external postgres config ConfigMaps that are created by users, not by the operator. These don't carry the operator's label, so filtering them out would break the watch. This is a deliberate architectural decision -- not an oversight.
+
+The trade-off of label filtering: if your code tries to read an object that exists in the cluster but doesn't match the selector, the cache returns NotFound. The object is real, but the cache can't see it. This is exactly why multigres uses `GetAPIReader()` for external Secrets -- they exist, they just don't match the label filter.
+
 ## Cache Topology: Three Architectures
 
 The cache construction function looks at your options and picks one of three architectures.
@@ -67,9 +116,11 @@ The cache construction function looks at your options and picks one of three arc
 
 The catch: cross-namespace `List` calls aggregate results from all per-namespace caches. The `resourceVersion` on the aggregated list comes from whichever namespace the map iteration hits last -- effectively arbitrary. And `Limit` is distributed across caches in iteration order, so some namespaces dominate. For most use cases this doesn't matter. If it does, you need to know.
 
-**Delegating-by-GVK cache.** Activated when you set `ByObject`. Routes each GVK to its own cache with its own configuration -- different label selectors, different transforms, different namespace restrictions per type. GVKs without explicit configuration fall through to a default cache.
+**Delegating-by-GVK cache.** Activated when you set `ByObject` (as multigres does). Routes each GVK to its own cache with its own configuration -- different label selectors, different transforms, different namespace restrictions per type. GVKs without explicit configuration fall through to a default cache.
 
 You can combine these. A `ByObject` entry can itself have namespace-specific configuration, producing a per-GVK multi-namespace cache nested inside the delegating layer.
+
+Multigres takes the `ByObject` approach further by [applying different configurations per namespace](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go). The operator's own namespace gets an unfiltered cache (it needs to see its own Secrets, ConfigMaps, etc.), while all other namespaces get the label-filtered cache. This hybrid strategy minimizes memory while preserving full visibility in the operator's namespace.
 
 ## Field Indexers: Making List Fast
 
@@ -132,11 +183,13 @@ obj.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: 
 client.Get(ctx, key, obj)
 ```
 
+Note that multigres doesn't use `OnlyMetadata` -- it needs full ConfigMap data (postgres config contents) in its reconciliation logic. If it only needed to detect ConfigMap changes (not read their contents), switching to metadata-only watches and reading the full object via `APIReader` only when needed would cut memory significantly. This is a common optimization pattern: watch metadata-only for change detection, read full objects on demand.
+
 ## The Resync Period
 
 The cache has a `SyncPeriod` (default 10 hours). When it fires, the informer sends artificial Update events for every cached object, with `ObjectOld` and `ObjectNew` set to the same value. This is a safety net -- if a watch event was dropped, the resync ensures your controller eventually sees every object.
 
-If you use `GenerationChangedPredicate`, resync events are silently dropped because the generation didn't change. This is usually what you want. But if you rely on periodic re-reconciliation as a correctness mechanism (for example, to detect drift in external systems), don't use `GenerationChangedPredicate` -- or add explicit `RequeueAfter` in your Reconcile function instead of relying on resync.
+If you use `GenerationChangedPredicate`, resync events are silently dropped because the generation didn't change. This is usually what you want. Multigres uses `GenerationChangedPredicate` on its MultigresCluster, Cell, TableGroup, and TopoServer controllers -- they only reconcile on spec changes, so resync events are noise. But the Shard controller omits this predicate, meaning it receives resync events and re-runs its full reconciliation periodically. This acts as a drift-detection mechanism for pod roles, backup health, and drain state.
 
 The priority queue deprioritizes resync events (priority -100), so they're processed after real changes. This prevents a resync wave from blocking actual work.
 
@@ -146,8 +199,17 @@ The gap between writing to the API server and seeing the result in the cache is 
 
 **Pattern 1: Update, then Get returns old data.** You call `client.Update()`, then immediately `client.Get()`. The Get returns the pre-update version. Your code sees "nothing changed" and returns success. Then the watch event arrives, the object is re-enqueued, and the next reconciliation sees the correct state. This is fine. It's an extra reconciliation, not a bug.
 
-**Pattern 2: Create, then Get returns NotFound.** Same mechanism. You create a child object, then check if it exists. It doesn't -- yet. Your code creates it again and gets an `AlreadyExists` error. Handle that error gracefully (treat it as success) and the system converges.
+**Pattern 2: Create, then Get returns NotFound.** Same mechanism. You create a child object, then check if it exists. It doesn't -- yet. Your code creates it again and gets an `AlreadyExists` error. Handle that error gracefully (treat it as success) and the system converges. Multigres does [exactly this for Pods and PVCs](https://github.com/multigres/multigres-operator/blob/main/pkg/resource-handler/controller/shard/reconcile_pool_pods.go):
+
+```go
+if createErr := r.Create(ctx, desiredPVC); createErr != nil && !errors.IsAlreadyExists(createErr) {
+    return fmt.Errorf("failed to create PVC %s: %w", pvcName, createErr)
+}
+// AlreadyExists is silently accepted -- convergence handles the rest
+```
 
 **Pattern 3: Delete, then List still includes the object.** You delete an object, then list all objects and see it still present. The watch event hasn't arrived yet. If your logic depends on the object being gone, add a `DeletionTimestamp` check -- `DeletionTimestamp` is set by the API server before the delete event is even sent.
+
+**Pattern 4: SSA sidesteps the problem.** Multigres avoids most eventual consistency pitfalls by using Server-Side Apply instead of read-modify-write. It builds the desired object in memory and applies it. No read-before-write means no stale-read bugs. The API server itself determines what changed. If the applied state matches current state, it's a no-op. If not, it patches. The cache staleness is irrelevant because the write path never consulted the cache.
 
 The common thread: never assume that a write you just performed is visible in the cache. Design your Reconcile function to be correct regardless of which version of the data it sees. If it sees stale data, the worst case is an extra reconciliation -- which is exactly what level-triggered design gives you for free.

@@ -16,19 +16,26 @@ There's also a third kind -- **conversion webhooks** -- for CRDs with multiple A
 
 ## The Webhook Builder
 
-Controller-runtime exposes webhooks through a builder pattern that mirrors the controller builder:
+Controller-runtime exposes webhooks through a builder pattern that mirrors the controller builder. Here's how the [multigres-operator registers its webhooks](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/setup.go):
 
 ```go
-ctrl.NewWebhookManagedBy(mgr, &myv1.MyResource{}).
-    WithDefaulter(&myDefaulter{}).
-    WithValidator(&myValidator{}).
-    Complete()
+// Defaulter: populates defaults, resolves templates, injects trace context
+if err := ctrl.NewWebhookManagedBy(mgr, &multigresv1alpha1.MultigresCluster{}).
+    WithCustomDefaulter(scheme, &multigresv1alpha1.MultigresCluster{},
+        &MultigresClusterDefaulter{...}).
+    Complete(); err != nil { ... }
+
+// Validator: referential integrity, immutability, constraint checks
+if err := ctrl.NewWebhookManagedBy(mgr, &multigresv1alpha1.MultigresCluster{}).
+    WithCustomValidator(scheme, &multigresv1alpha1.MultigresCluster{},
+        &MultigresClusterValidator{...}).
+    Complete(); err != nil { ... }
 ```
 
 This registers two webhooks at conventional paths derived from the GVK:
 
-- `/mutate-mygroup-example-com-v1-myresource` for the defaulter
-- `/validate-mygroup-example-com-v1-myresource` for the validator
+- `/mutate-multigres-com-v1alpha1-multigrescluster` for the defaulter
+- `/validate-multigres-com-v1alpha1-multigrescluster` for the validator
 
 The path convention matters because your `MutatingWebhookConfiguration` and `ValidatingWebhookConfiguration` resources in the cluster must reference these exact paths. The builder generates them deterministically: `/mutate-` or `/validate-` followed by the group (dots replaced with dashes), version, and lowercase kind.
 
@@ -43,6 +50,8 @@ type Defaulter[T runtime.Object] interface {
 One method. You receive the object, mutate it in place, return nil or an error. Controller-runtime handles everything else: decoding the admission request, deep-copying the original, calling your function, computing the JSON patches between original and mutated, and encoding the response.
 
 The JSON patch computation is the clever part. You never think about patches. You just modify the Go struct and the framework diffs it.
+
+The [multigres defaulter](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/handlers/defaulter.go) does substantial work: it populates default container images, resolves template references (CoreTemplate, CellTemplate, ShardTemplate) into inline specs, sets up the system catalog, promotes implicit templates, and injects OpenTelemetry trace context annotations so that the webhook-to-controller async boundary can be bridged for distributed tracing. All of this happens inside a single `Default()` call. The framework turns the resulting object mutations into JSON patches automatically.
 
 One subtlety: if your defaulter returns the object unchanged, no patches are generated and the response is a simple "allowed." This short-circuit avoids sending empty patch arrays back to the API server.
 
@@ -60,9 +69,43 @@ type Validator[T runtime.Object] interface {
 
 Three methods, one per operation type. The framework dispatches based on the admission request's `Operation` field. Each method returns warnings (displayed to the user but don't block the request) and an error (blocks the request if non-nil).
 
-For Update validation, you get both the old and new objects. This lets you enforce immutability constraints: "this field cannot change after creation." You compare `oldObj.Spec.Region` to `newObj.Spec.Region` and reject if they differ.
+For Update validation, you get both the old and new objects. This lets you enforce immutability constraints. The [multigres validator](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/handlers/validator.go) uses this to prevent storage shrink (you can grow PVCs but not shrink them) and etcd replica count changes after creation. Comparing `oldObj` and `newObj` is the only way to distinguish "user set this to X" from "user changed this from Y to X."
 
 The error handling is worth understanding. If your error implements `apierrors.APIStatus` (like errors from `apierrors.NewForbidden()` or `apierrors.NewInvalid()`), the framework uses its status code and message directly. Otherwise it wraps your error message in a 403 Forbidden response. Use `apierrors.NewInvalid()` with field errors for structured validation messages that kubectl renders cleanly.
+
+## Protecting Child Resources from Direct Modification
+
+Multigres implements a pattern worth studying: validating webhooks on [child resources that block direct modification](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/setup.go) by anyone except the operator itself. Cells, Shards, TopoServers, and TableGroups are operator-managed -- users should modify the parent MultigresCluster, not edit children directly.
+
+```go
+// Validator on Cell, Shard, TopoServer, TableGroup:
+// Rejects create/update from any principal except the operator's service account,
+// the garbage collector, or the namespace controller.
+```
+
+The validator inspects the admission request's `UserInfo` to identify the caller. If it's the operator's own ServiceAccount, the request is allowed. If it's the garbage collector or namespace controller (needed for cascade deletion), it's allowed. Everyone else gets rejected with a clear error message explaining that the parent resource should be modified instead.
+
+This is a webhook doing what controllers can't: enforcing a constraint at admission time, before the invalid state ever reaches etcd. A controller could detect and revert unauthorized changes, but the user would see their kubectl command succeed and then watch their change get undone -- confusing. A webhook rejects immediately with an explanation.
+
+To set this up for your own operator, you'd add a validator for each child type. The validator would check the calling principal against an allowlist:
+
+```go
+func (v *ChildValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+    req, _ := admission.RequestFromContext(ctx)
+    if isOperatorServiceAccount(req.UserInfo) || isSystemPrincipal(req.UserInfo) {
+        return nil, nil
+    }
+    return nil, fmt.Errorf("direct creation of %s is not allowed; modify the parent resource instead", obj.GetObjectKind().GroupVersionKind().Kind)
+}
+```
+
+## Template Deletion Guards
+
+Another multigres webhook pattern: [preventing deletion of in-use templates](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/setup.go). CoreTemplates, CellTemplates, and ShardTemplates can be referenced by multiple clusters. Deleting a template that's in use would leave clusters in a broken state.
+
+The template validators implement `ValidateDelete` -- the often-neglected third method. They check whether any MultigresCluster still references the template being deleted. If so, the deletion is rejected.
+
+To make this check efficient, multigres uses tracking labels on the cluster objects (e.g., `multigres.com/uses-core-template: <name>`). The webhook can pre-filter clusters by label instead of scanning all clusters and parsing their specs. This is a common pattern for making webhook lookups fast enough to stay within the API server's webhook timeout.
 
 ## The Request Flow
 
@@ -108,17 +151,26 @@ Picture the deadlock: the cache starts, sends a LIST request to the API server, 
 
 Controller-runtime prevents this by starting the webhook server in phase 2 (after health probes but before caches). The cache starts in phase 3, by which time the webhook is ready to serve conversion requests.
 
+Multigres currently only uses `v1alpha1` -- no conversion webhooks needed yet. But when they introduce `v1`, the startup ordering will already protect them.
+
 ## Certificate Management
 
 Webhooks require TLS. The Kubernetes API server only communicates with webhooks over HTTPS, and it verifies the server certificate against the CA bundle in the webhook configuration.
 
-Controller-runtime's `DefaultServer` handles TLS setup with two mechanisms for certificate management:
+Controller-runtime's `DefaultServer` handles TLS setup with the `CertWatcher`, which monitors certificate files on disk using a dual strategy: filesystem notifications (fsnotify) for immediate detection, plus polling every 10 seconds as a fallback.
 
-The `CertWatcher` monitors certificate files on disk using a dual strategy: filesystem notifications (fsnotify) for immediate detection, plus polling every 10 seconds as a fallback. When you mount certificates from a Kubernetes Secret (managed by cert-manager, for example), the Secret update triggers a file change, the CertWatcher detects it, re-reads the cert and key, and the next TLS handshake uses the new certificate. No restart required.
+Multigres takes a different approach to certificate management. Instead of relying on cert-manager or external tools, it [runs its own internal CA](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go). During startup, a bootstrap phase generates a self-signed CA and webhook serving certificate. A certificate manager runnable is then added to the manager, which handles rotation. The [webhook server is configured](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go) to read certs from the directory where the internal CA writes them:
 
-The default cert directory is `/tmp/k8s-webhook-server/serving-certs/`, looking for `tls.crt` and `tls.key`. In production, cert-manager's `Certificate` resource writes to this location when configured correctly.
+```go
+WebhookServer: webhook.NewServer(webhook.Options{
+    Port:    9443,
+    CertDir: certDir,
+}),
+```
 
-If you supply your own `tls.Config.GetCertificate` function in the server options, the `CertWatcher` is skipped entirely. This is the escape hatch for custom certificate management -- PKCS#11 hardware tokens, Vault integration, or any other scheme that doesn't use files.
+This is the escape hatch mentioned in the controller-runtime docs: if you supply certs through your own mechanism, the `CertWatcher` handles the file-watching and rotation automatically. You just need to write the cert files to the configured directory.
+
+The default cert directory is `/tmp/k8s-webhook-server/serving-certs/`, looking for `tls.crt` and `tls.key`. In production with cert-manager, the `Certificate` resource writes to this location when configured correctly.
 
 ## Conversion Webhooks
 
@@ -145,9 +197,9 @@ All conversion requests go to a single path: `/convert`. The conversion handler 
 
 **Your webhook panics.** The panic is caught. A 500 Internal Server Error is returned. The API server applies the `failurePolicy`. If it's `Fail` (the default for most production setups), the API request is rejected. If it's `Ignore`, the request proceeds without your webhook's mutations or validation. Choose your failure policy carefully.
 
-**Your webhook is slow.** The API server has a timeout per webhook (default 10 seconds). If your handler exceeds it, the request is treated as a failure. This blocks the user's kubectl command. Unlike controller reconciliation, where slowness just means delayed convergence, webhook slowness directly degrades the API server experience for everyone.
+**Your webhook is slow.** The API server has a timeout per webhook (default 10 seconds). If your handler exceeds it, the request is treated as a failure. This blocks the user's kubectl command. Unlike controller reconciliation, where slowness just means delayed convergence, webhook slowness directly degrades the API server experience for everyone. Multigres's defaulter does template resolution (which involves cache reads, not API calls) -- fast enough for a webhook, but worth monitoring.
 
-**Your cert expires.** TLS handshakes fail. Every admission request to your webhook returns an error. The API server may reject all creates/updates for your resource type, depending on the `failurePolicy`. The `CertWatcher` polls every 10 seconds, so if cert-manager renews the cert, the new one is picked up quickly -- but only if the cert files are updated *before* the old cert expires.
+**Your cert expires.** TLS handshakes fail. Every admission request to your webhook returns an error. The API server may reject all creates/updates for your resource type, depending on the `failurePolicy`. The `CertWatcher` polls every 10 seconds, so if cert-manager (or your internal CA, as in multigres) renews the cert, the new one is picked up quickly -- but only if the cert files are updated *before* the old cert expires.
 
 **Your webhook rejects a valid object.** Unlike a controller bug (which just delays convergence), a webhook bug blocks users from creating or modifying resources. There is no retry, no backoff, no eventual consistency. The request fails and the user sees an error. Test your validation logic thoroughly -- a false rejection in production is much harder to recover from than a controller bug.
 
@@ -162,5 +214,7 @@ A webhook must respond immediately. It can't say "I'll get back to you." It can'
 A controller operates on its own schedule. It reads current state, makes progress toward desired state, and if it fails, it tries again later. The workqueue buffers. The rate limiter backs off. The system converges eventually.
 
 Use webhooks for things that must be enforced at admission time: defaults that other systems depend on, validation rules that can't be fixed after the fact, conversion between API versions. Use controllers for everything else.
+
+Multigres draws this line clearly. The webhook handles template resolution (the defaulter ensures every cluster has a fully resolved spec before it reaches etcd) and constraint validation (no storage shrink, referential integrity, no direct child modification). Everything else -- creating Cells, managing Shards, draining pods, registering topology -- lives in controllers. The webhook is a gate. The controllers are the convergence engine.
 
 If you find yourself putting complex business logic in a webhook, pause. Ask whether the same constraint could be enforced by a controller that watches objects after creation and either fixes them or marks them as invalid. Controllers are more resilient, more testable, and more debuggable than webhooks. Webhooks are for gates. Controllers are for convergence.

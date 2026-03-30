@@ -1,6 +1,6 @@
 # Manager Lifecycle: Startup Order Matters More Than You Think
 
-The Manager is 400 lines of carefully sequenced initialization code. It looks like boilerplate. It isn't. Every line exists to prevent a specific race condition, deadlock, or startup failure that someone hit in production.
+The Manager is [~650 lines of carefully sequenced initialization code](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/manager/internal.go). It looks like boilerplate. It isn't. Every line exists to prevent a specific race condition, deadlock, or startup failure that someone hit in production.
 
 If you understand the startup order, you can debug "my controller isn't starting" in minutes instead of hours. If you understand the shutdown order, you can explain why your Pod keeps getting killed during rolling updates. If you understand runnable groups, you can predict exactly when any component in the system will start and stop.
 
@@ -18,6 +18,30 @@ The Manager is not just a controller registry. It coordinates the lifecycle of e
 - Any **custom runnables** you add via `mgr.Add()`
 
 The Manager doesn't just start these things. It starts them in a specific order, monitors them for failures, and shuts them down in the reverse order.
+
+Here's how the [multigres-operator constructs its manager](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go), with several non-default options:
+
+```go
+mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+    Scheme: scheme,
+    LeaderElection:                true,
+    LeaderElectionID:              "multigres-operator.multigres.com",
+    LeaderElectionReleaseOnCancel: true,  // fast failover
+    Cache: cache.Options{
+        ByObject: map[client.Object]cache.ByObject{
+            &corev1.Secret{}:      {Label: managedBySelector},
+            &appsv1.StatefulSet{}: {Label: managedBySelector},
+            // ... label-filtered cache per type
+        },
+    },
+    WebhookServer: webhook.NewServer(webhook.Options{
+        Port:    9443,
+        CertDir: certDir,
+    }),
+})
+```
+
+The API server client is configured with `QPS: 50, Burst: 100` -- higher than the defaults (20/30), reflecting that a database operator managing pods, PVCs, and services across multiple shards makes many API calls per reconciliation.
 
 ## The Six Runnable Groups
 
@@ -48,6 +72,8 @@ Kubernetes checks Pod readiness before routing traffic. If the health probe serv
 
 By starting health probes immediately, the Pod reports as alive (even if not yet ready -- the readyz endpoint can report "not yet" while the healthz endpoint reports "alive"). This gives the rest of the startup sequence time to complete without the Pod being terminated.
 
+Multigres runs its [metrics server on port 8443 with TLS and authentication filters](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go) -- a production-grade setup that prevents unauthorized scraping of sensitive metrics.
+
 ### Phase 2: Webhook Servers
 
 Webhook servers start next, before the cache. This ordering prevents the conversion webhook deadlock.
@@ -62,11 +88,13 @@ The Cluster starts, which starts the cache, which starts all informers. Each inf
 
 If an informer can't sync -- the CRD doesn't exist, RBAC denies the LIST, the API server is unreachable -- the manager blocks until `CacheSyncTimeout` (default 2 minutes). After that, the source reports an error and the controller startup fails.
 
-This is also where you'll see high memory usage during startup for operators that watch many resource types. Each LIST pulls every object of that type into memory.
+This is also where you'll see high memory usage during startup for operators that watch many resource types. Each LIST pulls every object of that type into memory. Multigres mitigates this with its label-filtered cache -- during startup, the LIST calls include label selectors, so the API server only sends objects managed by the operator.
 
 ### Phase 4: Non-Leader-Election Runnables
 
 Runnables that explicitly opt out of leader election via `NeedLeaderElection() == false` start here. These run on every replica, regardless of leader status. Common examples: custom health check watchers, metrics collectors, or runnables that need to monitor the cluster but not modify it.
+
+Multigres adds its [internal certificate rotation manager](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go) as a custom runnable. Certificate rotation must happen on every replica (all replicas serve webhooks), so the cert manager returns `NeedLeaderElection() == false`. This ensures webhook certificates are rotated regardless of which replica is the leader.
 
 ### Phase 5: Warmup Runnables
 
@@ -85,6 +113,32 @@ When this replica becomes the leader, three things happen:
 3. If warmup was enabled, the warmup phase has already populated the queue, so reconciliation begins immediately.
 
 If leader election is not configured (single-replica operators), the manager skips the election and immediately starts all LeaderElection runnables.
+
+## Registering Controllers
+
+After the manager is constructed, controllers are registered via `SetupWithManager`. The [multigres-operator registers five controllers](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go), each with `MaxConcurrentReconciles: 20`:
+
+```go
+if err := (&multigrescluster.MultigresClusterReconciler{
+    Client:   mgr.GetClient(),
+    Scheme:   mgr.GetScheme(),
+    Recorder: mgr.GetEventRecorderFor("multigrescluster-controller"),
+}).SetupWithManager(mgr, 20); err != nil { ... }
+
+if err := (&shard.ShardReconciler{
+    Client:    mgr.GetClient(),
+    Scheme:    mgr.GetScheme(),
+    Recorder:  mgr.GetEventRecorderFor("shard-controller"),
+    APIReader: mgr.GetAPIReader(),   // uncached reader for external secrets
+    RPCClient: rpcClient,            // for topology operations
+}).SetupWithManager(mgr, 20); err != nil { ... }
+```
+
+`MaxConcurrentReconciles: 20` means 20 goroutines per controller process reconcile requests concurrently. The default is 1. For an operator managing hundreds of shards across multiple clusters, a single worker would serialize all reconciliation and fall behind. 20 workers let the controller reconcile 20 different objects simultaneously.
+
+The tradeoff: higher concurrency means more concurrent API server writes and more concurrent resource consumption. If your reconciliation is CPU-intensive or makes many API calls, too many workers can overwhelm the API server or the operator's own Pod. Start with the default, measure reconciliation latency, and increase if your queue depth grows.
+
+Notice that the `ShardReconciler` receives `mgr.GetAPIReader()` -- the uncached client -- in addition to the standard cached client. Most controllers only need the cached client. The Shard controller needs direct API access for external resources that fall outside the label-filtered cache.
 
 ## Leader Election Internals
 
@@ -110,7 +164,7 @@ Why? Because losing the lease means another replica might already be the new lea
 
 The in-memory workqueue is lost. Anything queued but not yet processed is abandoned. This sounds dangerous, but it's fine because of level-triggered reconciliation. The new leader starts up, its cache syncs (re-listing all objects), and every object is re-enqueued. Nothing is permanently lost. The system converges.
 
-If you have `LeaderElectionReleaseOnCancel` enabled, the outgoing leader voluntarily releases the lease on clean shutdown (SIGTERM). This allows the next replica to acquire leadership immediately instead of waiting for the full lease duration to expire. In practice, this reduces failover time from ~15 seconds (lease duration) to ~2 seconds (retry period).
+Multigres enables [`LeaderElectionReleaseOnCancel: true`](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go). On a clean shutdown (SIGTERM during a rolling update), the outgoing leader voluntarily releases the lease. The next replica acquires leadership immediately instead of waiting for the full lease duration to expire. In practice, this reduces failover time from ~15 seconds (lease duration) to ~2 seconds (retry period). For a database operator, minimizing the window where no controller is running is critical.
 
 ## The Shutdown Sequence
 
@@ -150,7 +204,7 @@ mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()) // /ready
 
 The health probe server starts in Phase 1, before everything else. But individual checks can report "not ready" until their respective components start. This is the right pattern: the health endpoint itself is always available, but it reports the actual readiness of downstream components.
 
-There's a subtle interaction with readiness and leader election. If your readyz check includes the webhook started checker, and your webhook takes time to start (waiting for cert-manager to issue a certificate), the Pod reports not-ready during that window. If you have a PodDisruptionBudget or a rolling update strategy that waits for readiness, this can slow down deployments. Monitor your readiness probe latency and adjust timeouts accordingly.
+There's a subtle interaction with readiness and leader election. If your readyz check includes the webhook started checker, and your webhook takes time to start (waiting for certificates), the Pod reports not-ready during that window. If you have a PodDisruptionBudget or a rolling update strategy that waits for readiness, this can slow down deployments. Monitor your readiness probe latency and adjust timeouts accordingly.
 
 ## Adding Custom Runnables
 
@@ -175,6 +229,14 @@ func (r *myRunnable) NeedLeaderElection() bool {
 }
 ```
 
+Multigres uses this for its [internal certificate manager](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go), which rotates TLS certificates for the webhook server. Certificate rotation must happen on every replica because every replica serves webhooks. The cert manager implements `NeedLeaderElection() == false` and is added to the manager as a regular runnable -- the framework routes it to the Others group, which starts in Phase 4, unconditionally.
+
+```go
+// Simplified: how multigres adds its cert rotation runnable
+certManager := cert.NewManager(caKey, caCert, certDir, rotationInterval)
+if err := mgr.Add(certManager); err != nil { ... }
+```
+
 If your runnable needs to do setup before leader election (pre-populating state, establishing connections), implement the `warmupRunnable` interface with a `Warmup(ctx context.Context) error` method. The warmup phase runs in Phase 5, before leader election completes.
 
 The Manager guarantees that if `Start` returns an error, the entire manager shuts down. This is deliberate -- a failed component shouldn't silently continue while the rest of the system assumes it's healthy. If your runnable can tolerate transient failures, handle retries internally and only return an error for unrecoverable situations.
@@ -183,10 +245,12 @@ The Manager guarantees that if `Start` returns an error, the entire manager shut
 
 When the manager hangs during startup, it's almost always one of these:
 
-**Cache sync timeout.** An informer can't LIST a resource type. Check RBAC (does your ServiceAccount have `list` and `watch` permissions?), check CRDs (is the CRD installed?), check network (can the Pod reach the API server?). The manager logs which informers it's waiting for. Look for "cache did not sync" messages.
+**Cache sync timeout.** An informer can't LIST a resource type. Check RBAC (does your ServiceAccount have `list` and `watch` permissions?), check CRDs (is the CRD installed?), check network (can the Pod reach the API server?). The manager logs which informers it's waiting for. Look for "cache did not sync" messages. If you're using label-filtered caches (like multigres), verify that your label selectors don't inadvertently exclude the resources your controller needs.
 
 **Conversion webhook deadlock.** You have a CRD with conversion webhooks, but the webhook server isn't starting before the cache. This shouldn't happen with the default manager, but can happen with custom lifecycle management. Check that you're not adding the webhook server to a group that depends on cache sync.
 
 **Health probe kills the Pod.** The startup takes longer than the readiness probe timeout. Increase `initialDelaySeconds` or `failureThreshold` on your readiness probe. The manager starts health probes first specifically to avoid this, but if cache sync takes 3 minutes and your readiness probe fails after 60 seconds, the Pod gets killed.
 
-**Leader election takes too long.** In fresh deployments, the first leader acquisition is fast (no existing lease). But if a previous leader left a lease with 15 seconds remaining, the new leader waits up to `LeaseDuration` before it can acquire. During this window, the manager is running but no controllers are active. This is normal. If it's too slow, reduce `LeaseDuration` -- but be careful, because shorter leases increase the risk of split-brain during API server partitions.
+**Leader election takes too long.** In fresh deployments, the first leader acquisition is fast (no existing lease). But if a previous leader left a lease with 15 seconds remaining, the new leader waits up to `LeaseDuration` before it can acquire. During this window, the manager is running but no controllers are active. This is normal. If it's too slow, reduce `LeaseDuration` -- but be careful, because shorter leases increase the risk of split-brain during API server partitions. `LeaderElectionReleaseOnCancel` (as multigres uses) eliminates this wait during clean rollouts by releasing the lease before the Pod terminates.
+
+**Certificate bootstrap fails.** If you manage your own webhook certificates (like multigres does internally), the bootstrap must complete before the webhook server starts. If the CA can't be generated or the cert files can't be written, the webhook server starts with no certificates and every TLS handshake fails. Ensure your cert bootstrap runs before `mgr.Start()`, not inside a runnable.
