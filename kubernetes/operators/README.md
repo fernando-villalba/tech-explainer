@@ -1,6 +1,6 @@
 # Building Kubernetes Operators
 
-A Kubernetes operator is a controller that manages custom resources. You define a new resource type -- say, `MultigresCluster` -- and write a program that watches for instances of it and makes the cluster converge toward the desired state. User creates a `MultigresCluster`. Your operator creates the Pods, Services, ConfigMaps, PVCs, and StatefulSets that make it real. User changes the spec. Your operator detects the drift and reconciles. User deletes it. Kubernetes garbage-collects the children.
+A Kubernetes operator is a set of controllers that manage custom resources. You define a new resource type -- say, `MultigresCluster` -- and write a program that watches for instances of it and makes the cluster converge toward the desired state. User creates a `MultigresCluster`. Your operator creates the Pods, Services, ConfigMaps, PVCs, and StatefulSets that make it real. User changes the spec. Your operator detects the drift and reconciles. User deletes it. Kubernetes garbage-collects the children.
 
 That's the whole idea. Everything else -- the frameworks, the scaffolding tools, the code generators, the SDKs -- exists to make that loop reliable and the boilerplate manageable.
 
