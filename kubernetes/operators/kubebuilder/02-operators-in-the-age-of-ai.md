@@ -116,3 +116,9 @@ kubebuilder solves a problem that's getting easier to solve by other means. The 
 controller-gen solves a problem that is not getting easier. Deterministic schema generation from type definitions is a compiler problem, and compilers should not be probabilistic.
 
 The future of operator development isn't choosing between kubebuilder and AI. It's recognizing that they solve different problems at different altitudes. kubebuilder gives you a runway. controller-gen gives you a bridge. AI gives you wings. Use the runway for takeoff if you want. But the distance you cover in the air dwarfs the distance you covered on the ground.
+
+## Testing Changes Too
+
+AI doesn't just change how operators are built. It changes how they should be tested. When the same AI writes both the code and the tests, the tests inherit the same blind spots as the code. The multigres-operator achieved near-100% coverage and still had 20+ bugs afterward. 65% of all Go code additions were test code. 35,703 lines of test code were deleted during architectural refactors. The traditional testing pyramid -- many unit tests, fewer integration tests, few e2e tests -- inverts when AI is writing both sides.
+
+The [testing strategy explainer](../testing/00-testing-operators-in-the-age-of-ai.md) digs into the data: which bugs the test suite missed and why, what actually caught them (behavioral observation and independent agent review), and how to allocate testing effort during active development versus after the architecture stabilizes.
