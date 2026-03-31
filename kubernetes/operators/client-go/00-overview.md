@@ -8,7 +8,7 @@ controller-runtime's Cache is a set of SharedInformers from `client-go/tools/cac
 
 Understanding these primitives won't change how you write Reconcile functions. But it will change how you debug them. When the cache serves stale data, you'll know it's because the Reflector's watch stream hasn't delivered the event yet. When an object gets requeued with increasing delays, you'll know it's the rate-limiting workqueue applying exponential backoff. When leader election takes 15 seconds to fail over, you'll know it's the LeaseDuration minus the RenewDeadline.
 
-## The REST Client: Where Every Request Starts
+## The REST Client: Where Every Request Starts ([rest](https://github.com/kubernetes/client-go/tree/master/rest))
 
 Everything in client-go starts with `rest.Config`. This struct holds the connection to the API server: host URL, authentication (bearer token, client certificates, or auth plugins), TLS settings, rate limiting, and timeout configuration.
 
@@ -20,7 +20,7 @@ That one-liner from controller-runtime calls `rest.InClusterConfig()` when runni
 
 Every client in client-go -- the typed clientset, the dynamic client, controller-runtime's client -- builds on top of a `rest.RESTClient` constructed from this config. The RESTClient handles HTTP verb mapping (GET, POST, PUT, PATCH, DELETE), content negotiation (JSON or protobuf), request retry, and rate limiting. You almost never use it directly, but it's the bottom of the stack.
 
-## The Clientset: Type-Safe Access to Built-in Resources
+## The Clientset: Type-Safe Access to Built-in Resources ([kubernetes](https://github.com/kubernetes/client-go/tree/master/kubernetes))
 
 The `kubernetes` package provides a generated, type-safe client for every built-in Kubernetes resource:
 
@@ -33,7 +33,7 @@ One method per resource per verb. `CoreV1().Pods()` returns a `PodInterface` wit
 
 controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. But the multigres-operator uses the clientset directly in specific situations: webhook handlers that need a raw client before the Manager's cache is running, and test utilities that create typed clients for cluster setup.
 
-## The Dynamic Client: When You Don't Have Go Types
+## The Dynamic Client: When You Don't Have Go Types ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
 
 The dynamic client operates on `unstructured.Unstructured` -- a wrapper around `map[string]interface{}`. No Go types needed. You specify the resource by its GVR (GroupVersionResource) and work with raw data:
 
@@ -48,7 +48,7 @@ result, err := dynamicClient.Resource(schema.GroupVersionResource{
 
 This is useful for generic tools that operate on arbitrary resource types, for controllers that manage CRDs they don't have compile-time types for, and for kubectl plugins. controller-runtime's client can also work with `unstructured.Unstructured`, but the dynamic client is what's underneath.
 
-## The Informer Pipeline: From API Server to Local Cache
+## The Informer Pipeline: From API Server to Local Cache ([tools/cache](https://github.com/kubernetes/client-go/tree/master/tools/cache))
 
 This is the core of client-go and the most important thing to understand. When controller-runtime's cache serves you an object from `r.Get()`, it's reading from an informer's local store. The informer filled that store using a four-stage pipeline.
 
@@ -80,7 +80,7 @@ controller-runtime registers handlers that extract the object's key (or the owne
 
 controller-runtime's cache creates and manages these shared informers. When you call `For(&MyType{})` in the builder, the cache ensures a SharedInformer exists for `MyType`. When you call `Owns(&appsv1.Deployment{})`, it ensures a SharedInformer exists for Deployments.
 
-## The Workqueue: Deduplication, Delay, and Backoff
+## The Workqueue: Deduplication, Delay, and Backoff ([util/workqueue](https://github.com/kubernetes/client-go/tree/master/util/workqueue))
 
 The workqueue is what sits between "an event happened" and "Reconcile is called." client-go provides three queue interfaces, each layering on the previous:
 
@@ -100,7 +100,7 @@ When Reconcile succeeds (returns `nil, nil`), controller-runtime calls `Forget(i
 
 This is why a single broken object doesn't take down your operator. It backs off exponentially while other objects process normally.
 
-## Event Recording: Making Reconciliation Visible
+## Event Recording: Making Reconciliation Visible ([tools/record](https://github.com/kubernetes/client-go/tree/master/tools/record))
 
 `tools/record` provides the `EventRecorder` interface:
 
@@ -132,7 +132,7 @@ r.Recorder.Eventf(shard, "Warning", "ConfigError", "Failed to generate pg_hba: %
 
 This creates a Kubernetes Event tied to the Shard object. `kubectl describe shard my-shard` shows it. Events aggregate automatically -- the same reason/message combination on the same object doesn't create thousands of Event objects.
 
-## Leader Election: One Active Replica at a Time
+## Leader Election: One Active Replica at a Time ([tools/leaderelection](https://github.com/kubernetes/client-go/tree/master/tools/leaderelection))
 
 `tools/leaderelection` implements leader election using Kubernetes Lease objects. A `LeaderElector` performs the election and calls three callbacks:
 
@@ -148,7 +148,7 @@ The leader holds a Lease object and periodically renews it. If it fails to renew
 
 controller-runtime's Manager wraps this entirely. When you set `LeaderElection: true` in the Manager options, it runs `LeaderElector` and only starts controllers after winning the election. The multigres-operator enables `LeaderElectionReleaseOnCancel` so the outgoing leader voluntarily releases the lease on clean shutdown, cutting failover time from ~15 seconds to ~2 seconds.
 
-## Retry Utilities: Handling Optimistic Concurrency
+## Retry Utilities: Handling Optimistic Concurrency ([util/retry](https://github.com/kubernetes/client-go/tree/master/util/retry))
 
 Kubernetes uses optimistic concurrency. Every object has a `resourceVersion`. When you update an object, the API server rejects the write if the `resourceVersion` doesn't match -- someone else modified the object between your read and your write. The error is a `Conflict` (HTTP 409).
 

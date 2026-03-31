@@ -4,7 +4,7 @@ Every Kubernetes object -- a Pod, a Deployment, your custom `MultigresCluster` -
 
 This is the lowest layer in the operator stack. client-go builds on it. controller-runtime builds on it. Your CRD types embed it. You use it in every file of your operator without thinking about it. When something goes wrong -- a type isn't recognized, a scheme registration is missing, an error check doesn't match -- you need to understand what's down here.
 
-## GVK and GVR: How Kubernetes Identifies Things
+## GVK and GVR: How Kubernetes Identifies Things ([runtime/schema](https://github.com/kubernetes/apimachinery/tree/master/pkg/runtime/schema))
 
 Every resource in Kubernetes is identified by two coordinate systems.
 
@@ -22,7 +22,7 @@ schema.GroupVersionKind{
 
 GVK and GVR are related but not identical. The Kind is `MultigresCluster`. The Resource is `multigresclusters`. The mapping between them (pluralization, aliasing) is handled by the REST mapper. Most of the time you work with GVKs in Go code and GVRs are resolved automatically.
 
-## The Scheme: A Registry of Known Types
+## The Scheme: A Registry of Known Types ([runtime](https://github.com/kubernetes/apimachinery/tree/master/pkg/runtime))
 
 The `runtime.Scheme` is the central type registry. It's a bidirectional map between Go types and GVKs. When you write:
 
@@ -55,7 +55,7 @@ var (
 )
 ```
 
-## TypeMeta and ObjectMeta: The Shape of Every Object
+## TypeMeta and ObjectMeta: The Shape of Every Object ([apis/meta/v1](https://github.com/kubernetes/apimachinery/tree/master/pkg/apis/meta/v1))
 
 Every Kubernetes object embeds two structs.
 
@@ -100,7 +100,7 @@ The fields that matter most for operator development:
 
 `Finalizers` are strings that prevent deletion until removed. Add a finalizer to run cleanup logic before an object is garbage-collected. Remove it when cleanup is complete. If a finalizer is never removed, the object gets stuck in `Terminating` state.
 
-## The Error Taxonomy: Every Error Has a Reason
+## The Error Taxonomy: Every Error Has a Reason ([api/errors](https://github.com/kubernetes/apimachinery/tree/master/pkg/api/errors))
 
 The API server returns structured errors as `StatusError` objects. apimachinery provides predicate functions to classify them:
 
@@ -136,7 +136,7 @@ The full set of predicates:
 
 The two you'll use most in operator code are `IsNotFound` (the canonical "object was deleted between event and reconciliation" check) and `IsConflict` (the signal to retry a read-modify-write). The multigres-operator checks `IsNotFound` in every reconciler's initial Get and `IsAlreadyExists` when creating child resources idempotently.
 
-## Status Conditions: Standardized Health Reporting
+## Status Conditions: Standardized Health Reporting ([apis/meta/v1](https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go))
 
 `metav1.Condition` is the standard way to report status in Kubernetes:
 
@@ -175,7 +175,7 @@ if meta.IsStatusConditionTrue(obj.Status.Conditions, "Available") {
 
 The multigres-operator uses conditions on every CRD: `Available`, `Progressing`, `Degraded`, `ReadyForDeletion`. The `ReadyForDeletion` condition is part of its graceful deletion protocol -- the parent checks this condition before deleting a child resource.
 
-## Labels and Selectors: Querying by Metadata
+## Labels and Selectors: Querying by Metadata ([labels](https://github.com/kubernetes/apimachinery/tree/master/pkg/labels))
 
 Labels are key-value pairs on ObjectMeta. Selectors match objects by their labels. This is how Kubernetes connects Services to Pods, how Deployments find their ReplicaSets, and how operators filter resources.
 
@@ -208,7 +208,7 @@ r.List(ctx, podList, client.MatchingLabelsSelector{Selector: selector})
 
 The multigres-operator uses label selectors extensively for cache filtering. Its Manager configures per-type cache rules: Secrets in the operator namespace are unfiltered (cert-manager creates unlabeled secrets), Secrets in all other namespaces are filtered by the operator's label. This reduces memory by only caching objects the operator manages.
 
-## NamespacedName and types.UID
+## NamespacedName and types.UID ([types](https://github.com/kubernetes/apimachinery/tree/master/pkg/types))
 
 `types.NamespacedName` is the identifier you see everywhere in controller-runtime:
 
@@ -223,7 +223,7 @@ This is what your Reconcile function receives in the `Request`. It's the key for
 
 `types.UID` is the globally unique identifier for an object. Unlike names (which can be reused after deletion), UIDs are unique across time and space. OwnerReferences include the UID to ensure they point to the specific owner instance, not a different object that happens to have the same name.
 
-## Resource Quantities: CPU and Memory
+## Resource Quantities: CPU and Memory ([api/resource](https://github.com/kubernetes/apimachinery/tree/master/pkg/api/resource))
 
 `api/resource.Quantity` represents CPU and memory values:
 
