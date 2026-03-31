@@ -78,6 +78,14 @@ The Kubernetes type system. The foundation everything else builds on.
 |---|-------|----------------------|
 | 0 | [Overview](apimachinery/00-overview.md) | The Scheme and GVK/GVR coordinate system, TypeMeta and ObjectMeta, the error taxonomy, status Conditions, label selectors, NamespacedName, and resource quantities |
 
+### [E2E Framework](e2e-framework/)
+
+End-to-end testing with real clusters. The layer above envtest.
+
+| # | Title | What you'll understand |
+|---|-------|----------------------|
+| 0 | [Overview](e2e-framework/00-overview.md) | How e2e-framework relates to envtest, the Environment/Feature architecture, Kind cluster lifecycle, shared vs dedicated cluster patterns, and the full operator testing spectrum |
+
 ## Where to Start
 
 Building a new operator? Read the [controller-runtime overview](controller-runtime/00-overview.md) first. It gives you the mental model for how reconciliation works.
@@ -91,5 +99,7 @@ Debugging a specific problem? The [controller-runtime README](controller-runtime
 Want to understand what's underneath controller-runtime? Read the [client-go overview](client-go/00-overview.md). It maps every controller-runtime abstraction to the client-go primitive it wraps.
 
 Hitting "no kind registered" panics or confused about Schemes and GVKs? Read the [apimachinery overview](apimachinery/00-overview.md). It covers the type system everything else builds on.
+
+Setting up e2e tests with real clusters? Read the [e2e-framework overview](e2e-framework/00-overview.md). It covers Kind cluster lifecycle, shared vs dedicated clusters, and how e2e complements envtest.
 
 Questioning whether scaffolding tools still matter? Read [operators in the age of AI](kubebuilder/02-operators-in-the-age-of-ai.md).
