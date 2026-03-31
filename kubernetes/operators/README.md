@@ -78,13 +78,15 @@ The Kubernetes type system. The foundation everything else builds on.
 |---|-------|----------------------|
 | 0 | [Overview](apimachinery/00-overview.md) | The Scheme and GVK/GVR coordinate system, TypeMeta and ObjectMeta, the error taxonomy, status Conditions, label selectors, NamespacedName, and resource quantities |
 
-### [E2E Framework](e2e-framework/)
+### [Testing](testing/)
 
-End-to-end testing with real clusters. The layer above envtest.
+Testing strategy for operators -- envtest, e2e, and how AI changes the calculus.
 
 | # | Title | What you'll understand |
 |---|-------|----------------------|
-| 0 | [Overview](e2e-framework/00-overview.md) | How e2e-framework relates to envtest, the Environment/Feature architecture, Kind cluster lifecycle, shared vs dedicated cluster patterns, and the full operator testing spectrum |
+| 0 | [Testing Strategy in the Age of AI](testing/00-testing-operators-in-the-age-of-ai.md) | Why the testing pyramid inverts with AI, the correlated error problem, what a real operator's git log reveals about test ROI |
+| 1 | [E2E Framework](testing/01-e2e-framework.md) | Real Kind clusters, shared vs dedicated patterns, wait conditions, the testing spectrum |
+| 2 | [Testing with envtest](controller-runtime/04-testing-with-envtest.md) | Real etcd + kube-apiserver locally, test helpers, fake client injection, komega, false-passing traps |
 
 ## Where to Start
 
@@ -100,6 +102,8 @@ Want to understand what's underneath controller-runtime? Read the [client-go ove
 
 Hitting "no kind registered" panics or confused about Schemes and GVKs? Read the [apimachinery overview](apimachinery/00-overview.md). It covers the type system everything else builds on.
 
-Setting up e2e tests with real clusters? Read the [e2e-framework overview](e2e-framework/00-overview.md). It covers Kind cluster lifecycle, shared vs dedicated clusters, and how e2e complements envtest.
+Setting up e2e tests with real clusters? Read the [e2e-framework overview](testing/01-e2e-framework.md). It covers Kind cluster lifecycle, shared vs dedicated clusters, and how e2e complements envtest.
 
 Questioning whether scaffolding tools still matter? Read [operators in the age of AI](kubebuilder/02-operators-in-the-age-of-ai.md).
+
+Rethinking your test strategy with AI? Read [testing operators in the age of AI](testing/00-testing-operators-in-the-age-of-ai.md). It's backed by git log data showing what 100% coverage actually caught (and didn't).

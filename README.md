@@ -14,6 +14,6 @@ Everything involved in building Kubernetes operators in Go -- from the type syst
 | [Client-go](kubernetes/operators/client-go/) | The raw Kubernetes client: informer pipeline, workqueue, event recording, leader election, retry utilities |
 | [Controller-runtime](kubernetes/operators/controller-runtime/) | The operator framework: reconciler interface, cache, webhooks, manager lifecycle, testing with envtest |
 | [Kubebuilder](kubernetes/operators/kubebuilder/) | Scaffolding and code generation: kubebuilder, controller-gen, Operator SDK, and operators in the age of AI |
-| [E2E Framework](kubernetes/operators/e2e-framework/) | End-to-end testing with real Kind clusters |
+| [Testing](kubernetes/operators/testing/) | Testing strategy, e2e-framework with real Kind clusters, and how AI changes the testing calculus |
 
 Start with the [operators overview](kubernetes/operators/) for the full map and reading order.
