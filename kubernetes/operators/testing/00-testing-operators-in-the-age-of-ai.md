@@ -58,7 +58,7 @@ During these transitions, the tests weren't catching regressions. There was noth
 
 ## 100% Coverage and 20+ Bugs
 
-The timeline makes the point clearly (and let me add this is just a small sample, there were probably 100+ bugs that unit and integration tests did not catch over a span of a few months and 1300 commits)
+The timeline makes the point clearly. The table below is a small sample -- across 1,303 commits and a few months of development, there were likely 100+ bugs that unit and integration tests did not catch.
 
 **February 28, 2026:** "Increasing code coverage in all modules to as close to 100 percent as possible." 7,917 lines of test code added. Subsequent commits pushed coverage higher. The test suite was comprehensive by any reasonable measure.
 
@@ -87,7 +87,7 @@ Coverage measures "did this line execute?" It doesn't measure "did this line do 
 
 Two things caught bugs that unit and integration tests couldn't.
 
-**The [observer](https://github.com/multigres/multigres-operator/tree/07acad254c7b77dcbbf3ebdb8a228d867e62ee0a/tools/observer).** Originally called "chaos tool," renamed to "observer" as its role clarified. It runs alongside the operator in the cluster and continuously validates invariants against live state. It has a map of valid drain state transitions:
+**The [observer](https://github.com/multigres/multigres-operator/tree/07acad254c7b77dcbbf3ebdb8a228d867e62ee0a/tools/observer).** Originally designed as an aid for chaos testing -- intended to work alongside tools like [Chaos Mesh](https://chaos-mesh.org/) -- the observer runs alongside the operator in the cluster and continuously validates invariants against live state. It has a map of valid drain state transitions:
 
 ```go
 var drainStateOrder = map[string]int{
@@ -99,6 +99,10 @@ var drainStateOrder = map[string]int{
 ```
 
 If a pod ever goes from `acknowledged` back to `requested`, the observer flags it. It checks that topology registrations match running pods. It verifies ownerReferences are set for cascade deletion. It monitors SQL replication health. It detects silent data plane failures -- situations where the operator thinks everything is fine but the database isn't actually serving queries.
+
+The observer became necessary for another reason: the operator's development outpaced Multigres itself in maturity. Multigres had liveness and readiness probes, but they didn't accurately report whether the underlying database was ready for queries in every scenario at the time. The observer filled that gap -- running actual SQL queries against the data plane, inspecting Multigres component logs, and unifying all of this information so failures from any layer were caught in one place. It tested the operator and the system it managed simultaneously.
+
+Later, exerciser skills were built so that an AI agent could run fixtures and scenarios against a live cluster while the observer continuously checked the resulting state. The combination -- agent-driven scenario execution plus observer-driven invariant checking -- caught far more bugs than unit tests, integration tests, fixed e2e tests, or manual QA smoke testing could have in the same time. And it caught bugs in both the operator and in Multigres itself, because the observer validates the full stack -- from operator reconciliation down to whether the database is actually serving queries.
 
 No unit test checks for backward drain state transitions because you'd have to imagine the scenario first. The observer watches what actually happens and catches violations the test author never anticipated.
 
