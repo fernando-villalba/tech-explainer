@@ -216,7 +216,7 @@ This ordering prevents an entire class of startup bugs. The [manager lifecycle d
 
 ## Writing Resources: Client-Side vs Server-Side Apply
 
-Controllers need to create and update child resources. There are three approaches, each with different trade-offs.
+Controllers need to create and update child resources. There are two main approaches, each with different trade-offs.
 
 ### The Traditional Pattern: Read-Modify-Write
 
