@@ -2,8 +2,6 @@
 
 Deep-dive technical explainers written by reading source code, not docs. Each one aims to give the reader the "aha moment" -- the mental model that makes everything else click.
 
-All examples are drawn from real production systems, primarily the [multigres-operator](https://github.com/multigres/multigres-operator), an operator for sharded PostgreSQL clusters on Kubernetes.
-
 ## Topics
 
 ### [Kubernetes Operators](kubernetes/operators/)
