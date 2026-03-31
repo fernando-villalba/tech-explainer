@@ -70,9 +70,13 @@ The raw Kubernetes client underneath controller-runtime.
 |---|-------|----------------------|
 | 0 | [Overview](client-go/00-overview.md) | The six subsystems inside client-go, how each maps to a controller-runtime abstraction, the informer pipeline, workqueue mechanics, and when to reach past controller-runtime |
 
-### Coming Soon
+### [Apimachinery](apimachinery/)
 
-**apimachinery** -- The Kubernetes type system. Schemes, GVK/GVR, ObjectMeta, Conditions, the error taxonomy, label selectors. The foundation everything else builds on.
+The Kubernetes type system. The foundation everything else builds on.
+
+| # | Title | What you'll understand |
+|---|-------|----------------------|
+| 0 | [Overview](apimachinery/00-overview.md) | The Scheme and GVK/GVR coordinate system, TypeMeta and ObjectMeta, the error taxonomy, status Conditions, label selectors, NamespacedName, and resource quantities |
 
 ## Where to Start
 
@@ -85,5 +89,7 @@ Deciding between kubebuilder and Operator SDK? Read the [Operator SDK explainer]
 Debugging a specific problem? The [controller-runtime README](controller-runtime/) has a jump table: stale reads, webhook errors, startup hangs, flaky tests.
 
 Want to understand what's underneath controller-runtime? Read the [client-go overview](client-go/00-overview.md). It maps every controller-runtime abstraction to the client-go primitive it wraps.
+
+Hitting "no kind registered" panics or confused about Schemes and GVKs? Read the [apimachinery overview](apimachinery/00-overview.md). It covers the type system everything else builds on.
 
 Questioning whether scaffolding tools still matter? Read [operators in the age of AI](kubebuilder/02-operators-in-the-age-of-ai.md).
