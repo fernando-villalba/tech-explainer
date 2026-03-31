@@ -74,6 +74,8 @@ By starting health probes immediately, the Pod reports as alive (even if not yet
 
 Multigres runs its [metrics server on port 8443 with TLS and authentication filters](https://github.com/multigres/multigres-operator/blob/main/cmd/multigres-operator/main.go) -- a production-grade setup that prevents unauthorized scraping of sensitive metrics.
 
+The pprof server also starts in this phase. It exposes Go runtime profiling endpoints (`/debug/pprof/heap`, `/debug/pprof/goroutine`, `/debug/pprof/profile`, `/debug/pprof/trace`) that let you diagnose problems logs can't surface. Logs tell you *what happened* -- "reconciled Shard X", "failed to create Deployment." pprof tells you *what the process is doing right now* -- which functions consume CPU, how much memory is allocated and by what, how many goroutines exist and where they're blocked. Memory growing over time? A heap profile shows the cache holding 500MB of unfiltered Secrets. Operator stops reconciling but the process is alive? A goroutine profile shows thousands of goroutines blocked on a mutex. pprof starts in Phase 1 because these diagnostic endpoints need to be available even when the operator is stuck in a later startup phase -- if the cache hangs during sync, pprof is already serving and you can diagnose why.
+
 ### Phase 2: Webhook Servers
 
 Webhook servers start next, before the cache. This ordering prevents the conversion webhook deadlock.
