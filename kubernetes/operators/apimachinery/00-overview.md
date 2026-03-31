@@ -8,7 +8,7 @@ This is the lowest layer in the operator stack. client-go builds on it. controll
 
 Every resource in Kubernetes is identified by two coordinate systems.
 
-**GroupVersionKind (GVK)** identifies a *type*. Group is the API group (empty string for core types like Pod, `apps` for Deployment, `multigres.com` for your CRDs). Version is the API version (`v1`, `v1beta1`, `v1alpha1`). Kind is the type name (`Pod`, `Deployment`, `MultigresCluster`). A GVK tells you *what something is*.
+**GroupVersionKind (GVK)** identifies a *type*. Group is the API group (empty string for core types like Pod, `apps` for Deployment, `multigres.com` for CRDs like MultigresCluster). Version is the API version (`v1`, `v1beta1`, `v1alpha1`). Kind is the type name (`Pod`, `Deployment`, `MultigresCluster`). A GVK tells you *what something is*.
 
 ```go
 schema.GroupVersionKind{

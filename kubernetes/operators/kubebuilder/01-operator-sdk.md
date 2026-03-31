@@ -107,7 +107,7 @@ An OLM bundle is a directory containing everything OLM needs to install your ope
 bundle/
   manifests/
     my-operator.clusterserviceversion.yaml   -- the CSV
-    my-operator-crd.yaml                     -- your CRDs
+    my-operator-crd.yaml                     -- the operator's CRDs
   metadata/
     annotations.yaml                         -- bundle metadata
   tests/
@@ -117,7 +117,7 @@ bundle/
 
 The CSV -- ClusterServiceVersion -- is the central artifact. It describes your operator: its name, version, description, icon, maintainers, the CRDs it owns, the CRDs it depends on, the RBAC it needs, and the Deployment that runs it. OLM reads this to know how to install and upgrade your operator.
 
-`operator-sdk generate bundle` creates this directory. It collects your CRDs from `config/crd/bases/`, your RBAC from `config/rbac/`, your Deployment from `config/manager/`, and composes them into a CSV. It prompts for metadata like display name and description. The `manifests` plugin that Operator SDK bundles into the Go scaffolding plugin generates the CSV base during `create api`, so the information accumulates incrementally.
+`operator-sdk generate bundle` creates this directory. It collects CRDs from `config/crd/bases/`, RBAC from `config/rbac/`, the Deployment from `config/manager/`, and composes them into a CSV. It prompts for metadata like display name and description. The `manifests` plugin that Operator SDK bundles into the Go scaffolding plugin generates the CSV base during `create api`, so the information accumulates incrementally.
 
 `operator-sdk bundle validate` checks the bundle for correctness: required fields present, CRDs match what the CSV declares, metadata annotations consistent.
 
