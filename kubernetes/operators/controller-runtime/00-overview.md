@@ -6,7 +6,7 @@ That model is wrong. And it's the reason most hand-rolled controllers have subtl
 
 A controller doesn't react to events. It converges reality toward desired state. The entire architecture of controller-runtime -- every queue, every cache, every handler -- exists to make that convergence reliable, even when the world is chaotic.
 
-## The Reconciler: Why You Only Get a Name
+## The Reconciler: Why You Only Get a Name ([pkg/reconcile](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/reconcile))
 
 Here is the core interface. Everything else exists to serve it:
 
@@ -89,7 +89,7 @@ The handler pushes `reconcile.Request` values -- just names -- onto the workqueu
 
 **Stage 4: The Workqueue.** This is where the magic happens. The queue de-duplicates. If an object generates 50 events while you're processing it, you don't reconcile 50 times. You reconcile once more after you finish. The queue also handles rate limiting with exponential backoff -- 5ms, 10ms, 20ms, up to ~17 minutes -- for objects that keep failing. And since v0.19, the default queue is a priority queue that processes real changes before initial-list and resync events.
 
-## The Builder: Wiring It All Together
+## The Builder: Wiring It All Together ([pkg/builder](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/builder))
 
 In practice, you rarely interact with sources, handlers, and predicates directly. The builder pattern handles the wiring. Here's how multigres [sets up the MultigresCluster controller](https://github.com/multigres/multigres-operator/blob/main/pkg/cluster-handler/controller/multigrescluster/multigrescluster_controller.go):
 
@@ -189,7 +189,7 @@ func (r *ShardReconciler) enqueueFromPostgresConfigMap(
 
 When a DBA updates a postgres config ConfigMap, every Shard that references it gets reconciled. The Shard controller computes a config hash, detects the drift, and triggers a rolling restart of the affected pods. The DBA never touched the Shard objects. The ConfigMap change cascaded through the mapper, through the queue, and into a reconciliation that reads current state and converges.
 
-## The Cache: A Local Mirror of the Cluster
+## The Cache: A Local Mirror of the Cluster ([pkg/cache](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/cache))
 
 Every `client.Get()` and `client.List()` in your Reconcile function hits the cache, not the API server. The cache is backed by those same informers -- it holds a complete, indexed copy of every object you've told it to watch.
 
@@ -201,7 +201,7 @@ One subtlety: the cache is eventually consistent. After you write an object, a s
 
 There's much more to the cache -- multi-namespace routing, per-GVK delegation, metadata-only watches, field indexers, and transform functions that strip data before it enters memory. See the [cache deep-dive](01-cache-and-client.md) for the full picture.
 
-## The Manager: Orchestrating the Lifecycle
+## The Manager: Orchestrating the Lifecycle ([pkg/manager](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/manager))
 
 The Manager is the top-level coordinator. It owns the cache, the client, the webhook server, health probes, metrics, and every controller. When you call `mgr.Start(ctx)`, it boots the entire system in a precise order:
 
@@ -242,7 +242,7 @@ pod.Annotations[metadata.AnnotationDrainState] = metadata.DrainStateRequested
 if err := r.Patch(ctx, pod, patch); err != nil { ... }
 ```
 
-## Ownership and Garbage Collection
+## Ownership and Garbage Collection ([pkg/controller/controllerutil](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/controller/controllerutil))
 
 Controller-runtime provides `controllerutil.SetControllerReference()` to declare that one object owns another. Multigres uses this in every builder function:
 

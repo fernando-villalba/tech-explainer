@@ -2,7 +2,7 @@
 
 When you call `client.Get()` inside a Reconcile function, you probably think it talks to the Kubernetes API server. It doesn't. It reads from a local in-memory copy of every object your controller is watching. That local copy is the cache, and understanding how it works -- its topology, its consistency model, and its failure modes -- is the difference between a controller that handles 10 objects and one that handles 10,000.
 
-## The Split Client
+## The Split Client ([pkg/client](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/client))
 
 The default client that the Manager gives you is a split client. It routes reads and writes to different backends.
 
@@ -46,7 +46,7 @@ if err := r.APIReader.Get(ctx, types.NamespacedName{
 
 This is not about freshness. It's about visibility. The cached client can't see objects that were filtered out at the informer level. The API reader bypasses the cache entirely and hits the API server directly.
 
-## What the Cache Actually Is
+## What the Cache Actually Is ([pkg/cache](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/cache))
 
 The cache is a collection of informers. One informer per GVK (GroupVersionKind). Each informer maintains a long-lived WATCH connection to the API server and holds a complete copy of every object of that type in its local store.
 

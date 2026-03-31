@@ -14,7 +14,7 @@ Kubernetes admission webhooks come in two flavors, and controller-runtime implem
 
 There's also a third kind -- **conversion webhooks** -- for CRDs with multiple API versions. These convert objects between versions on the fly. We'll get to those.
 
-## The Webhook Builder
+## The Webhook Builder ([pkg/webhook](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/webhook))
 
 Controller-runtime exposes webhooks through a builder pattern that mirrors the controller builder. Here's how the [multigres-operator registers its webhooks](https://github.com/multigres/multigres-operator/blob/main/pkg/webhook/setup.go):
 

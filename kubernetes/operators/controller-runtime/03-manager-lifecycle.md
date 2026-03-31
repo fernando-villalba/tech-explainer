@@ -4,7 +4,7 @@ The Manager is [~650 lines of carefully sequenced initialization code](https://g
 
 If you understand the startup order, you can debug "my controller isn't starting" in minutes instead of hours. If you understand the shutdown order, you can explain why your Pod keeps getting killed during rolling updates. If you understand runnable groups, you can predict exactly when any component in the system will start and stop.
 
-## What the Manager Owns
+## What the Manager Owns ([pkg/manager](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/manager))
 
 The Manager is not just a controller registry. It coordinates the lifecycle of every component in the operator:
 

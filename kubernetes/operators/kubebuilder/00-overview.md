@@ -10,7 +10,7 @@ Three tools, one operator. Understanding which tool does what is the key to unde
 
 If you're wondering "what about Operator SDK?" -- Operator SDK is kubebuilder. It imports kubebuilder's CLI as a library, registers the same Go scaffolding plugin, and adds extra commands for OLM distribution and extra plugins for Ansible and Helm operators. For Go operators, `operator-sdk init` and `kubebuilder init` produce identical output. The [Operator SDK explainer](01-operator-sdk.md) covers what it adds and when you'd use it instead.
 
-## Tool 1: Kubebuilder -- The Scaffolder
+## Tool 1: [Kubebuilder](https://github.com/kubernetes-sigs/kubebuilder) -- The Scaffolder
 
 Kubebuilder is a CLI that runs on your laptop. You invoke it a handful of times when starting a project or adding new APIs. It writes files and then gets out of the way. It has three commands that matter.
 
@@ -180,7 +180,7 @@ The design doc makes this philosophy explicit:
 
 Kubebuilder does the "1 time init of stubs." The other two tools handle the rest.
 
-## Tool 2: Controller-gen -- The Code Generator
+## Tool 2: [Controller-gen](https://github.com/kubernetes-sigs/controller-tools) -- The Code Generator
 
 `controller-gen` is a CLI from the [controller-tools](https://github.com/kubernetes-sigs/controller-tools) project. It reads your Go source files, finds marker comments, and generates artifacts. It runs at build time through the Makefile, not at deploy time. It has no runtime presence.
 
@@ -287,7 +287,7 @@ The only files controller-gen regenerates are:
 
 Everything else in the project is untouched. Your types, your controllers, your webhooks, your main.go -- controller-gen reads them but never writes them.
 
-## Tool 3: Controller-runtime -- The Runtime Framework
+## Tool 3: [Controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) -- The Runtime Framework
 
 Controller-runtime is a Go library (`sigs.k8s.io/controller-runtime`). It's the only one of the three tools that runs in your cluster. Your `go.mod` imports it. Your binary links against it. It provides the Manager, the Reconciler interface, the cache, the client, the webhook server, leader election, and health probes.
 

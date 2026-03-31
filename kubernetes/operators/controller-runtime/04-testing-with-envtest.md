@@ -8,7 +8,7 @@ Real clusters are slow, expensive, and flaky. You need infrastructure, you need 
 
 envtest is the third option. It starts a real etcd and a real kube-apiserver on your local machine, gives you a `rest.Config` that points at them, and lets you run your controller against actual Kubernetes API behavior. No mocks. No cluster. Tests run in seconds.
 
-## What You Get
+## What You Get ([pkg/envtest](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/envtest))
 
 envtest gives you a real Kubernetes control plane, minus everything that runs on nodes. Concretely:
 
