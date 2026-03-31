@@ -27,7 +27,7 @@ Everything else goes to the cache.
 
 If you ever need a guaranteed-fresh read -- for example, to check a condition that must be current before a destructive action -- the Manager exposes `GetAPIReader()`. This returns a client that always talks to the API server directly.
 
-The [multigres-operator](https://github.com/multigres/multigres-operator) uses `GetAPIReader()` for a specific and instructive reason. The Shard controller needs to read external Secrets -- TLS certificates and credentials created by cert-manager or other external systems. These Secrets don't carry the operator's labels, so they're invisible to the label-filtered cache (more on that below). The [Shard reconciler stores the API reader](https://github.com/multigres/multigres-operator/blob/main/pkg/resource-handler/controller/shard/shard_controller.go) and uses it for these external reads:
+The [multigres-operator](https://github.com/multigres/multigres-operator) uses `GetAPIReader()` because the Shard controller needs to read external Secrets -- TLS certificates and credentials created by cert-manager or other external systems. These Secrets don't carry the operator's labels, so they're invisible to the label-filtered cache (more on that below). The [Shard reconciler stores the API reader](https://github.com/multigres/multigres-operator/blob/main/pkg/resource-handler/controller/shard/shard_controller.go) and uses it for these external reads:
 
 ```go
 type ShardReconciler struct {
