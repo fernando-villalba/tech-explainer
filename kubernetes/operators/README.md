@@ -6,7 +6,7 @@ That's the whole idea. Everything else -- the frameworks, the scaffolding tools,
 
 ## The Toolchain Is Layers, Not a Framework
 
-Most tutorials present operator development as "install kubebuilder, follow the steps." That framing hides the actual architecture. There are four layers, each building on the one below:
+Most tutorials present operator development as "install kubebuilder, follow the steps." That framing hides the actual architecture. There are five layers, each building on the one below:
 
 **apimachinery** (`k8s.io/apimachinery`) -- The type system. Defines how Kubernetes objects work at the lowest level: `runtime.Scheme` (a registry mapping Go types to API group/version/kind triples), `metav1.ObjectMeta` (the metadata every object carries), `metav1.Condition` (standardized status reporting), label selectors, error types like `IsNotFound` and `IsConflict`. Every Kubernetes library depends on this. You use it constantly without thinking about it.
 
@@ -14,9 +14,9 @@ Most tutorials present operator development as "install kubebuilder, follow the 
 
 **controller-runtime** (`sigs.k8s.io/controller-runtime`) -- The framework. Wraps client-go into the abstractions you actually use: a Manager that coordinates everything, a split Client that reads from cache and writes to the API server, a Builder that wires event sources to reconcilers, predicates that filter events, and a webhook server. This is what runs in your cluster. When your `Reconcile` function is called with a name and you call `r.Get()` to fetch the object, that's controller-runtime.
 
-**kubebuilder / operator-sdk** -- Scaffolding tools. Generate the project skeleton: Go files, Makefile, Dockerfile, Kustomize configs. kubebuilder writes the starter code and gets out of the way. Operator SDK is kubebuilder's CLI wrapped with extra plugins for OLM distribution and non-Go languages. Neither has runtime presence. Neither runs in your cluster.
+**controller-gen** (`sigs.k8s.io/controller-tools`) -- The code generator. Reads marker comments in your Go source (`// +kubebuilder:validation:Minimum=0`) and deterministically generates CRD YAML, RBAC roles, DeepCopy methods, and webhook configurations. Runs at build time through the Makefile. Despite the `+kubebuilder:` prefix on the markers, controller-gen is a separate tool from kubebuilder. kubebuilder scaffolds the initial markers. controller-gen reads them. Of all five layers, this is the one that stays in every operator forever -- deterministic code generation from type definitions is not something AI should replace.
 
-Alongside these sits **controller-gen** -- a code generator from the controller-tools project that reads marker comments in your Go source (`// +kubebuilder:validation:Minimum=0`) and deterministically generates CRD YAML, RBAC roles, and DeepCopy methods. Despite the `+kubebuilder:` prefix, it's a separate tool. kubebuilder scaffolds the markers. controller-gen reads them.
+**kubebuilder / operator-sdk** -- Scaffolding tools. Generate the project skeleton: Go files, Makefile, Dockerfile, Kustomize configs. kubebuilder writes the starter code and gets out of the way. Operator SDK is kubebuilder's CLI wrapped with extra plugins for OLM distribution and non-Go languages. Neither has runtime presence. Neither runs in your cluster.
 
 ## What Matters More Than You Think
 
