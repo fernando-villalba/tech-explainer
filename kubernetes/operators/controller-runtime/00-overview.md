@@ -214,33 +214,83 @@ The Manager is the top-level coordinator. It owns the cache, the client, the web
 
 This ordering prevents an entire class of startup bugs. The [manager lifecycle deep-dive](03-manager-lifecycle.md) covers why each step matters, what happens during shutdown, and the failure modes you need to understand for production.
 
-## Writing Resources: Server-Side Apply in Practice
+## Writing Resources: Client-Side vs Server-Side Apply
 
-Controllers need to create and update child resources. The traditional approach is "get, check if exists, create or update" -- a pattern called `CreateOrUpdate` or `CreateOrPatch` in controller-runtime's `controllerutil` package.
+Controllers need to create and update child resources. There are three approaches, each with different trade-offs.
 
-Multigres uses a different approach entirely: [Server-Side Apply (SSA)](https://kubernetes.io/docs/reference/using-api/server-side-apply/) for almost all resource management. Instead of reading the current state and deciding whether to create or update, it builds the desired object and applies it:
+### The Traditional Pattern: Read-Modify-Write
+
+The most common approach in older operators is the read-modify-write loop. Read the object, check if it exists, create it or update it:
 
 ```go
-desired.SetGroupVersionKind(multigresv1alpha1.GroupVersion.WithKind("Cell"))
+deployment := &appsv1.Deployment{}
+err := r.Get(ctx, types.NamespacedName{Name: "my-app", Namespace: ns}, deployment)
+if apierrors.IsNotFound(err) {
+    // Doesn't exist yet -- create it
+    deployment = buildDesiredDeployment()
+    return r.Create(ctx, deployment)
+}
+// Exists -- update it
+deployment.Spec.Replicas = ptr.To(int32(3))
+return r.Update(ctx, deployment)
+```
+
+controller-runtime's `controllerutil` package wraps this into `CreateOrUpdate` and `CreateOrPatch`, which handle the exists-or-not branching:
+
+```go
+dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns}}
+_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+    dep.Spec.Replicas = ptr.To(int32(3))
+    dep.Spec.Template.Spec.Containers = []corev1.Container{{
+        Name:  "app",
+        Image: "my-app:v2",
+    }}
+    return controllerutil.SetControllerReference(owner, dep, r.Scheme)
+})
+```
+
+This works, but it has a fundamental problem: the **read-modify-write race condition**. Between the `Get` and the `Update`, another actor -- another controller, a human running `kubectl edit`, a webhook, a horizontal pod autoscaler -- can modify the same object. The `Update` call sends the full object back to the API server, overwriting whatever the other actor changed. If the HPA set replicas to 5 and the operator immediately writes replicas back to 3, the HPA's change is silently lost.
+
+Kubernetes protects against this with `resourceVersion`. If the version doesn't match, the API server returns a `Conflict` error and the operator must retry. But `CreateOrUpdate` replaces the *entire* object, so even fields the operator doesn't care about must be correct. This creates coupling between the operator and every other system that touches the same object.
+
+### Server-Side Apply: Declare What You Own
+
+[Server-Side Apply (SSA)](https://kubernetes.io/docs/reference/using-api/server-side-apply/) solves this by shifting the merge logic to the API server. Instead of reading the current state and deciding what to change, the operator builds the desired state and sends it. The API server figures out what's different, applies only the fields the operator manages, and leaves everything else untouched:
+
+```go
+desired := buildDesiredDeployment()
+desired.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("Deployment"))
 if err := r.Patch(ctx, desired, client.Apply,
     client.ForceOwnership,
-    client.FieldOwner("multigres-operator"),
+    client.FieldOwner("my-operator"),
 ); err != nil {
-    return fmt.Errorf("failed to apply cell: %w", err)
+    return fmt.Errorf("failed to apply deployment: %w", err)
 }
 ```
 
-One call handles create-if-missing, update-if-changed, and no-op-if-identical. The API server determines whether the object differs from current state. `ForceOwnership` means the operator claims all fields it manages, resolving conflicts with other writers.
+One call handles create-if-missing, update-if-changed, and no-op-if-identical. No `Get` first. No `resourceVersion` to manage. No read-modify-write race.
 
-This pattern eliminates an entire class of bugs: the "read, modify, write" race condition where another actor changes the object between your read and your write. SSA is declarative at the API level, not just at the controller level.
+`FieldOwner` declares which fields this caller manages. The API server tracks ownership per field. If the operator manages `spec.replicas` and the HPA also manages `spec.replicas`, SSA detects the conflict. With `ForceOwnership`, the operator wins and takes ownership of the field. Without it, the API server returns a conflict, letting the operator decide how to handle it.
 
-The only exceptions in multigres are Pods (immutable after creation, so they use `r.Create()` with `AlreadyExists` handling) and targeted annotation/label changes (which use `client.MergeFrom()` patches for surgical precision):
+This is what makes SSA declarative at the API level. The operator says "this is what I want the object to look like." The API server computes the diff. Other actors' fields are preserved. The multigres-operator uses SSA for almost all resource management -- Cells, TableGroups, TopoServers, Deployments, Services, ConfigMaps.
+
+### When to Use Which
+
+**SSA** is the better default for most child resource management. It eliminates race conditions, handles create-or-update in one call, and plays well with multiple actors managing different fields of the same object. Use it for any resource the operator "owns" and wants to keep converged.
+
+**`CreateOrUpdate` / `CreateOrPatch`** still makes sense for simple cases where the operator is the only writer and the read-modify-write pattern is easier to reason about. Some operators prefer it because the mutation function in `CreateOrUpdate` explicitly shows what's being changed.
+
+**`r.Create()` with `AlreadyExists` handling** is the right pattern for immutable resources. Pods can't be updated after creation -- they must be deleted and recreated. The multigres-operator uses this for PostgreSQL pods: create the pod, and if it already exists, move on.
+
+**`client.MergeFrom()` patches** are for surgical changes to specific fields without touching anything else. The multigres-operator uses this for annotation updates during drain operations -- setting `DrainState` without overwriting anything else on the pod:
 
 ```go
 patch := client.MergeFrom(pod.DeepCopy())
 pod.Annotations[metadata.AnnotationDrainState] = metadata.DrainStateRequested
 if err := r.Patch(ctx, pod, patch); err != nil { ... }
 ```
+
+This is lighter than SSA when the change is a single field and you don't want to construct the full desired state.
 
 ## Ownership and Garbage Collection ([pkg/controller/controllerutil](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/controller/controllerutil))
 
