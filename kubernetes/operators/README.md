@@ -62,11 +62,17 @@ The scaffolding tool, the code generator, and the changing landscape.
 | 1 | [Operator SDK](kubebuilder/01-operator-sdk.md) | Why Operator SDK is kubebuilder (not an alternative), OLM integration, bundles, scorecard, Ansible/Helm operators |
 | 2 | [Operators in the Age of AI](kubebuilder/02-operators-in-the-age-of-ai.md) | What survives from scaffolding in a real operator, why controller-gen is irreplaceable but scaffolding is not, AI as architecture partner |
 
+### [Client-go](client-go/)
+
+The raw Kubernetes client underneath controller-runtime.
+
+| # | Title | What you'll understand |
+|---|-------|----------------------|
+| 0 | [Overview](client-go/00-overview.md) | The six subsystems inside client-go, how each maps to a controller-runtime abstraction, the informer pipeline, workqueue mechanics, and when to reach past controller-runtime |
+
 ### Coming Soon
 
 **apimachinery** -- The Kubernetes type system. Schemes, GVK/GVR, ObjectMeta, Conditions, the error taxonomy, label selectors. The foundation everything else builds on.
-
-**client-go** -- The raw client underneath controller-runtime. Informers, listers, work queues, retry utilities, event recording. What to reach for when controller-runtime's abstractions aren't enough.
 
 ## Where to Start
 
@@ -77,5 +83,7 @@ Confused by kubebuilder vs controller-runtime vs controller-gen? Read the [kubeb
 Deciding between kubebuilder and Operator SDK? Read the [Operator SDK explainer](kubebuilder/01-operator-sdk.md).
 
 Debugging a specific problem? The [controller-runtime README](controller-runtime/) has a jump table: stale reads, webhook errors, startup hangs, flaky tests.
+
+Want to understand what's underneath controller-runtime? Read the [client-go overview](client-go/00-overview.md). It maps every controller-runtime abstraction to the client-go primitive it wraps.
 
 Questioning whether scaffolding tools still matter? Read [operators in the age of AI](kubebuilder/02-operators-in-the-age-of-ai.md).
