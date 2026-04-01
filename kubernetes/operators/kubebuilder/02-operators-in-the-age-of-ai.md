@@ -14,27 +14,20 @@ To answer that honestly, look at what survived from the original scaffold and wh
 
 **What survived:**
 
-The Makefile. Not the exact one kubebuilder generated -- it's been modified -- but the *structure* is intact. The `make generate` target that calls controller-gen for DeepCopy methods. The `make manifests` target that generates CRD and RBAC YAML from markers. The `make test` target that wires up envtest. The tool version management that downloads controller-gen and setup-envtest to `bin/`. This wiring is genuinely valuable. Getting it right from scratch means understanding which controller-gen flags produce which outputs, how envtest discovers binaries, and how kustomize overlays compose. kubebuilder nailed this on day one.
+- **The Makefile structure.** Modified, but the bones are intact. `make generate` calls controller-gen for DeepCopy methods. `make manifests` generates CRD and RBAC YAML from markers. `make test` wires up envtest. Tool version management downloads controller-gen and setup-envtest to `bin/`. Getting this wiring right from scratch means understanding which controller-gen flags produce which outputs, how envtest discovers binaries, and how kustomize overlays compose. kubebuilder nailed this on day one.
+- **The `config/` directory.** Kustomize bases for CRDs, RBAC, manager deployment, webhook configuration, cert-manager integration. The overlays have been modified, but the compositional structure kubebuilder established is still there.
+- **The `go.mod` with the right dependencies.** controller-runtime, client-go, apimachinery -- the correct versions, compatible with each other. Dependency compatibility in the Kubernetes ecosystem is non-trivial.
 
-The `config/` directory structure. Kustomize bases for CRDs, RBAC, manager deployment, webhook configuration, cert-manager integration. The overlays have been modified, but the compositional structure kubebuilder established is still there.
-
-The `go.mod` with the right dependencies. controller-runtime, client-go, apimachinery -- the correct versions, compatible with each other. Dependency compatibility in the Kubernetes ecosystem is non-trivial.
-
-The Makefile structure and `config/` directory layout. Modified, but the bones are still there.
+That's it. Three things survived. Everything else was replaced.
 
 **What didn't survive:**
 
-The `internal/controller/` directory. Gone entirely. Controllers now live in `pkg/cluster-handler/controller/` and `pkg/resource-handler/controller/` -- a domain-driven split between cluster-level orchestration (MultigresCluster, TableGroup) and resource-level management (Cell, Shard, TopoServer). kubebuilder's flat `internal/controller/` layout couldn't express this.
-
-The scaffolded controller stubs. Every controller was written from scratch with the domain logic baked in from the start. The Shard controller alone manages drain state machines, topology registration, backup health monitoring, rolling restarts, and dynamic PVC ownership. No scaffold could have produced this.
-
-The scaffolded webhook stubs. The operator uses a single unified webhook registration via `multigreswebhook.Setup(mgr, resolver, opts)` that handles defaulting and validation for all types through a shared resolver. kubebuilder's one-webhook-per-type scaffold was the wrong pattern here.
-
-The scaffolded main.go. The current main.go has internal certificate rotation with CA bootstrapping, OpenTelemetry distributed tracing, per-namespace cache filtering with label selectors (secrets in the operator namespace are unwatched, secrets in other namespaces are filtered by label), RPC client injection for controllers that talk to the data plane, and custom flag configuration for webhook settings. None of this is scaffoldable because none of it is generic.
-
-Every `// +kubebuilder:scaffold:` marker. All removed -- `scaffold:imports`, `scaffold:builder`, `scaffold:scheme`. The operator registers controllers manually with custom initialization that includes event recorders and API readers that kubebuilder's scaffold pattern doesn't support. There is no trace of kubebuilder's scaffolding left in the Go source.
-
-The PROJECT file itself. Deleted. It tracked 4 of the 13 CRDs before it was removed. The remaining 9 CRDs were created by hand -- types file, DeepCopy markers, CRD markers, controller, builder registration, scheme registration. All the steps that `kubebuilder create api` automates, done manually, because the developer (working with AI) needed control over the structure. At some point the PROJECT file was just dead weight tracking a fraction of the API surface, so it was removed.
+- **The `internal/controller/` directory.** Gone. Controllers now live in `pkg/cluster-handler/controller/` and `pkg/resource-handler/controller/` -- a domain-driven split between cluster-level orchestration (MultigresCluster, TableGroup) and resource-level management (Cell, Shard, TopoServer). kubebuilder's flat layout couldn't express this.
+- **The scaffolded controller stubs.** Every controller was written from scratch with domain logic baked in. The Shard controller alone manages drain state machines, topology registration, backup health monitoring, rolling restarts, and dynamic PVC ownership.
+- **The scaffolded webhook stubs.** The operator uses a single unified webhook registration via `multigreswebhook.Setup(mgr, resolver, opts)` that handles defaulting and validation for all types through a shared resolver. kubebuilder's one-webhook-per-type scaffold was the wrong pattern.
+- **The scaffolded main.go.** The current main.go has internal certificate rotation with CA bootstrapping, OpenTelemetry tracing, per-namespace cache filtering with label selectors, RPC client injection for controllers that talk to the data plane, and custom flag configuration for webhook settings. None of this is scaffoldable because none of it is generic.
+- **Every `// +kubebuilder:scaffold:` marker.** All removed -- `scaffold:imports`, `scaffold:builder`, `scaffold:scheme`. The operator registers controllers manually with custom initialization that includes event recorders and API readers. There is no trace of kubebuilder's scaffolding left in the Go source.
+- **The PROJECT file.** Deleted. It tracked 4 of the 13 CRDs before it was removed. The remaining 9 were created by hand. At some point the PROJECT file was just dead weight tracking a fraction of the API surface.
 
 ## The Hard Part Was Never the Boilerplate
 
