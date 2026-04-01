@@ -47,7 +47,7 @@ kubebuilder generated none of this. It couldn't have. These aren't boilerplate p
 
 ## What controller-gen Does That AI Shouldn't
 
-Before this turns into "throw out all the tools," there's a critical distinction. controller-gen is not kubebuilder. And controller-gen is irreplaceable.
+Before this turns into "throw out all the tools," there's a critical distinction. controller-gen is part of the broader kubebuilder project organizationally, but it's a separate binary with a separate repo and a separate purpose. And it's irreplaceable.
 
 controller-gen reads markers in your Go source and deterministically generates CRD YAML, RBAC ClusterRoles, DeepCopy methods, and webhook configurations. The key word is *deterministically*. Given the same input, it produces the same output, every time. The generated CRD schema matches your Go types exactly. The RBAC role includes exactly the permissions your markers declare. The DeepCopy methods handle every field, every embedded struct, every pointer.
 

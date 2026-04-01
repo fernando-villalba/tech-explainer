@@ -10,7 +10,7 @@ Examples throughout reference the [multigres-operator](https://github.com/multig
 
 | # | Title | What you'll understand after reading |
 |---|-------|--------------------------------------|
-| 0 | [Overview](00-overview.md) | Why kubebuilder is not a framework, the three-tool ecosystem, what each CLI command scaffolds, how markers drive code generation, the plugin architecture, and what happens after kubebuilder gets out of the way |
+| 0 | [Overview](00-overview.md) | Why kubebuilder's scaffolding CLI is the least important part of the kubebuilder project, the three-tool ecosystem, what each CLI command scaffolds, how markers drive code generation, the plugin architecture, and what most production operators actually use |
 | 1 | [Operator SDK](01-operator-sdk.md) | Why Operator SDK is kubebuilder (not an alternative), what it adds (OLM, bundles, scorecard, Ansible/Helm operators), when to use which, and why switching costs nothing |
 | 2 | [Operators in the Age of AI](02-operators-in-the-age-of-ai.md) | What survives from kubebuilder's scaffold in a production operator, why controller-gen is irreplaceable but incremental scaffolding is not, and where AI fills the gap kubebuilder never could |
 

@@ -8,6 +8,18 @@ Kubebuilder is not a framework. It is a scaffolding tool. It generates a project
 
 Three tools, one operator. Understanding which tool does what is the key to understanding the whole system. Everything that follows is organized around these three tools.
 
+Organizationally, controller-runtime and controller-tools are part of the broader kubebuilder project. They share some maintainers and live under the same Kubernetes SIG. Some people call the whole thing "a framework" because of this. But in practice, most production operators use controller-gen and controller-runtime without ever touching kubebuilder's scaffolding CLI. A survey of six major operators makes this concrete:
+
+- [Vitess Operator](https://github.com/planetscale/vitess-operator) (PlanetScale): No PROJECT file, no scaffold markers. Uses controller-gen and controller-runtime.
+- [Zalando Postgres Operator](https://github.com/zalando/postgres-operator): No PROJECT file, no scaffold markers. Uses controller-gen for CRD generation. Doesn't use controller-runtime at all, built directly on client-go.
+- [Argo CD](https://github.com/argoproj/argo-cd): No PROJECT file, no scaffold markers. Uses `+kubebuilder:` markers (controller-gen) and controller-runtime.
+- [Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator): No PROJECT file, no scaffold markers. Uses controller-gen and controller-runtime.
+- [cert-manager](https://github.com/cert-manager/cert-manager): No PROJECT file, no scaffold markers. Uses controller-gen and controller-runtime.
+- [CloudNative-PG](https://github.com/cloudnative-pg/cloudnative-pg): PROJECT file, scaffold markers, the full kubebuilder workflow. The only one out of six.
+- [multigres-operator](https://github.com/multigres/multigres-operator): Used kubebuilder once for the initial scaffold, then removed the PROJECT file and all scaffold markers. Uses controller-gen and controller-runtime.
+
+Six out of seven use controller-gen. Six out of seven use controller-runtime. Only one uses kubebuilder's scaffolding actively. The organizational umbrella is real, but the practical usage tells a different story: controller-gen and controller-runtime are the parts that stay, the scaffolding CLI is the part most operators leave behind.
+
 If you're wondering "what about Operator SDK?" -- Operator SDK is kubebuilder. It imports kubebuilder's CLI as a library, registers the same Go scaffolding plugin, and adds extra commands for OLM distribution and extra plugins for Ansible and Helm operators. For Go operators, `operator-sdk init` and `kubebuilder init` produce identical output. The [Operator SDK explainer](01-operator-sdk.md) covers what it adds and when you'd use it instead.
 
 ## Tool 1: [Kubebuilder](https://github.com/kubernetes-sigs/kubebuilder) -- The Scaffolder
