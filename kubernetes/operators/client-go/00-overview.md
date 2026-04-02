@@ -202,7 +202,29 @@ The pattern: controller-runtime handles the reconciliation loop and cache, but o
 | Get cluster config | `ctrl.GetConfigOrDie()` | `rest.InClusterConfig()` or `clientcmd.BuildConfigFromFlags()` |
 | Leader election | `Manager` option: `LeaderElection: true` | `leaderelection.NewLeaderElector(config)` + manual callbacks |
 
-The key difference: controller-runtime's `Client` is generic (works with any type through the Scheme), reads from cache by default, and doesn't require per-resource method calls. client-go's clientset is type-safe per resource but requires knowing the exact API group, version, and resource method. controller-runtime is less code for common operations. client-go gives finer control when you need it.
+The syntax looks similar in the table, but that hides the real difference. The table shows individual operations. controller-runtime's value is in all the wiring you'd have to build yourself if you only had client-go.
+
+## What controller-runtime Saves You From
+
+Building an operator on raw client-go means writing and maintaining all of the following yourself:
+
+- **Informer lifecycle management.** For each resource type you watch, you need to create a `SharedInformerFactory`, start the informers, wait for cache sync, and handle shutdown. controller-runtime's Manager does this automatically for every type registered through `For()`, `Owns()`, and `Watches()`.
+
+- **Workqueue wiring.** You need to create a rate-limiting workqueue, wire event handlers from each informer to enqueue the right keys (the object itself, its owner, or a custom mapping), handle the `Get`/`Done`/`Forget` lifecycle for each item, and implement the worker loop that dequeues and calls your reconciliation logic. controller-runtime's Builder and internal controller handle all of this.
+
+- **Cache-backed reads with API server writes.** With raw client-go, you either read from the informer's lister (cached, eventually consistent) or from the API server (fresh, expensive). You have to choose per call. controller-runtime's split client does this transparently: `Get` and `List` hit the cache, `Create`/`Update`/`Patch`/`Delete` hit the API server.
+
+- **Startup sequencing.** HTTP servers (health, metrics, pprof) need to start before the cache. Webhooks need to start before the cache (to avoid conversion webhook deadlocks). The cache needs to sync before controllers start. Leader election needs to gate the controllers. With client-go you sequence all of this manually. controller-runtime's Manager handles the six-phase startup in the correct order.
+
+- **Leader election integration.** With client-go you create a `LeaderElector`, configure the lease parameters, write the `OnStartedLeading`/`OnStoppedLeading` callbacks, and make sure your controllers only run when leading. With controller-runtime it's `LeaderElection: true` in the Manager options.
+
+- **Health probes and metrics.** With client-go you set up HTTP servers, register health check handlers, wire Prometheus metrics collectors, and manage TLS. controller-runtime's Manager provides all of this out of the box.
+
+- **Webhook server with TLS.** Running an admission webhook requires a TLS server, certificate loading, request decoding, response encoding, and path routing. controller-runtime's webhook package handles the HTTP plumbing and lets you implement a single `Default()` or `ValidateCreate()` method.
+
+- **Graceful shutdown.** Stopping controllers, draining workqueues, closing informer watch connections, releasing leader leases, and shutting down HTTP servers in the right order. controller-runtime's Manager reverses the startup sequence on context cancellation.
+
+The Zalando Postgres Operator, built directly on client-go, implements all of this manually. It works, but it's a significant amount of infrastructure code that every controller-runtime operator gets for free. For most operators, that trade-off isn't worth it. controller-runtime exists so that the reconciliation logic is the only code you have to write.
 
 ## The Architecture Mapping
 
