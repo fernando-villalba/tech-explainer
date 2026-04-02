@@ -172,23 +172,41 @@ err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 
 Most controller-runtime operators don't need this -- the reconciliation loop naturally handles conflicts by re-reading on the next reconcile. But when you need an atomic read-modify-write within a single reconciliation (status updates that must succeed before proceeding), `RetryOnConflict` is the tool.
 
-## When to Reach Past Controller-Runtime
+## How Much Do Real Operators Use client-go Directly?
 
-Most operators never import client-go directly. controller-runtime wraps it well enough. But there are specific situations where you need the lower layer.
+More than you'd think. controller-runtime wraps the core loop, but most production operators still import client-go for things controller-runtime doesn't cover. A survey of major operators:
 
-**Raw clientset for pre-cache operations.** The multigres-operator creates a `kubernetes.Clientset` in its webhook setup to check for existing resources before the Manager's cache is running. The cache only starts after informers sync. If you need API access during initialization, you need a raw client.
+- **multigres-operator**: 41 files import client-go directly. Uses `kubernetes.Clientset` for pre-cache operations, `tools/record` for event recording, `tools/cache` for custom indexers, `util/retry` for conflict retries, `tools/portforward` and `transport/spdy` for e2e test port forwarding.
+- **[CloudNative-PG](https://github.com/cloudnative-pg/cloudnative-pg)**: 14 client-go packages. Uses `discovery` for API discovery, `dynamic` for unstructured access, `tools/remotecommand` for exec into pods, `util/retry`.
+- **[Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator)**: 27 client-go packages. Uses raw `informers`, `listers`, `util/workqueue`, typed clients (`typed/core/v1`, `typed/apps/v1`), `discovery`, `metadata` informers. Large parts of the codebase work directly with client-go alongside controller-runtime.
+- **[cert-manager](https://github.com/cert-manager/cert-manager)**: 38 client-go packages. Uses `informers`, `listers`, `tools/leaderelection` directly, `applyconfigurations` for SSA, `util/workqueue`, `metadata` informers and listers. The most extensive direct client-go usage of any operator surveyed.
+- **[Zalando Postgres Operator](https://github.com/zalando/postgres-operator)**: Built entirely on client-go without controller-runtime.
 
-**Port forwarding in tests.** `tools/portforward` and `transport/spdy` provide programmatic port forwarding to pods. The multigres-operator uses this in e2e tests to connect to PostgreSQL instances inside the cluster without exposing them via Services.
+The pattern: controller-runtime handles the reconciliation loop and cache, but operators reach into client-go for typed clients, raw informers, discovery, retry utilities, event recording, remote execution, and port forwarding. The more complex the operator, the more client-go surfaces directly in the codebase.
 
-**Custom cache indexers.** `tools/cache` exports `MetaNamespaceKeyFunc` and the indexer interfaces. When you add a custom field index to controller-runtime's cache, you're creating an index in client-go's indexer.
+## Common Operations: controller-runtime vs client-go
 
-**Retry logic.** `util/retry.RetryOnConflict` for atomic status updates within a single reconciliation cycle.
+| Operation | controller-runtime | client-go equivalent |
+|---|---|---|
+| Get an object | `r.Get(ctx, key, &pod)` | `clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})` |
+| List objects | `r.List(ctx, &podList, client.InNamespace(ns))` | `clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})` |
+| Create an object | `r.Create(ctx, &pod)` | `clientset.CoreV1().Pods(ns).Create(ctx, &pod, metav1.CreateOptions{})` |
+| Update an object | `r.Update(ctx, &pod)` | `clientset.CoreV1().Pods(ns).Update(ctx, &pod, metav1.UpdateOptions{})` |
+| Patch an object | `r.Patch(ctx, &pod, patch)` | `clientset.CoreV1().Pods(ns).Patch(ctx, name, patchType, data, metav1.PatchOptions{})` |
+| Server-Side Apply | `r.Patch(ctx, obj, client.Apply, client.FieldOwner("x"))` | `clientset.CoreV1().Pods(ns).Apply(ctx, applyConfig, metav1.ApplyOptions{FieldManager: "x"})` |
+| Delete an object | `r.Delete(ctx, &pod)` | `clientset.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})` |
+| Update status | `r.Status().Update(ctx, &obj)` | `clientset.CoreV1().Pods(ns).UpdateStatus(ctx, &pod, metav1.UpdateOptions{})` |
+| Watch for changes | `Builder.For(&Type{}).Owns(&Child{})` | `informer.AddEventHandler(cache.ResourceEventHandlerFuncs{...})` |
+| Record an event | `recorder.Eventf(obj, "Normal", "Reason", "msg")` | `recorder.Eventf(obj, "Normal", "Reason", "msg")` (same interface) |
+| Retry on conflict | Not built in (use `util/retry`) | `retry.RetryOnConflict(retry.DefaultRetry, func() error { ... })` |
+| Get cluster config | `ctrl.GetConfigOrDie()` | `rest.InClusterConfig()` or `clientcmd.BuildConfigFromFlags()` |
+| Leader election | `Manager` option: `LeaderElection: true` | `leaderelection.NewLeaderElector(config)` + manual callbacks |
 
-**Event recording types.** Even though controller-runtime provides the recorder, the `EventRecorder` interface and event types come from `tools/record`.
+The key difference: controller-runtime's `Client` is generic (works with any type through the Scheme), reads from cache by default, and doesn't require per-resource method calls. client-go's clientset is type-safe per resource but requires knowing the exact API group, version, and resource method. controller-runtime is less code for common operations. client-go gives finer control when you need it.
 
-## The Mapping: controller-runtime to client-go
+## The Architecture Mapping
 
-| controller-runtime | client-go |
+| controller-runtime abstraction | client-go primitive underneath |
 |---|---|
 | `Cache` | `tools/cache.SharedInformer` (one per GVK) |
 | `Client.Get()` / `Client.List()` (reads) | `tools/cache.Indexer` lookup |

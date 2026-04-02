@@ -2,7 +2,7 @@
 
 A deep-dive explainer on [client-go](https://github.com/kubernetes/client-go), the raw Go client library for the Kubernetes API. Written by reading the source, not the docs.
 
-controller-runtime wraps client-go. Most operator developers never import client-go directly. But every `r.Get()`, every cache read, every workqueue requeue, every leader election -- that's client-go running underneath. Understanding it explains why controller-runtime works the way it does, and what to reach for when controller-runtime's abstractions aren't enough.
+controller-runtime wraps client-go for the core reconciliation loop, but most production operators still import client-go directly for things controller-runtime doesn't cover: typed clients, raw informers, retry utilities, event recording, remote execution, port forwarding. Even the multigres-operator, which uses controller-runtime heavily, has 41 files importing client-go. Understanding client-go explains why controller-runtime works the way it does and gives you access to the full Kubernetes client surface.
 
 Examples throughout reference the [multigres-operator](https://github.com/multigres/multigres-operator) -- a production operator that uses client-go directly for event recording, retry logic, port forwarding in e2e tests, and custom cache indexers.
 
