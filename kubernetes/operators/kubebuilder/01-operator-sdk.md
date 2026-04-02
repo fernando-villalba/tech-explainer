@@ -165,3 +165,7 @@ Operator SDK's scope is scaffolding (via kubebuilder's plugin system) and distri
 Operator SDK is kubebuilder plus a distribution layer. Same scaffolding engine, same project layout, same controller-runtime underneath. The difference is what happens after your operator works: kubebuilder stops at `make deploy`. Operator SDK carries you through to OLM bundles, catalog images, OperatorHub publishing, and scorecard validation.
 
 Next time someone asks "kubebuilder or Operator SDK?", you'll know it's the wrong question. The right question is: "Do I need OLM distribution or non-Go languages?" If yes, Operator SDK. If no, kubebuilder. And if you change your mind later, switching costs nothing -- because one is built on top of the other.
+
+---
+
+Previous: [Overview](00-overview.md) | Next: [Operators in the Age of AI](02-operators-in-the-age-of-ai.md)

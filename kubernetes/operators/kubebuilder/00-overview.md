@@ -436,3 +436,7 @@ Each failure maps to a specific tool.
 Kubebuilder is scaffolding that writes itself out of your project. Controller-gen is the generator that reads your markers and produces manifests. Controller-runtime is the framework that runs in your cluster. Three tools, clear boundaries, one operator.
 
 Next time you run `kubebuilder create api`, you'll know exactly what happens. Kubebuilder writes Go files and modifies main.go. Controller-gen reads the markers and generates YAML. Controller-runtime runs the Reconcile function you fill in. The scaffolding disappears. The generator runs at build time. The framework takes over at runtime. Your operator converges.
+
+---
+
+Next: [Operator SDK](01-operator-sdk.md)
