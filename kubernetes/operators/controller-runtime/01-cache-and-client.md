@@ -213,3 +213,7 @@ if createErr := r.Create(ctx, desiredPVC); createErr != nil && !errors.IsAlready
 **Pattern 4: SSA sidesteps the problem.** Multigres avoids most eventual consistency pitfalls by using Server-Side Apply instead of read-modify-write. It builds the desired object in memory and applies it. No read-before-write means no stale-read bugs. The API server itself determines what changed. If the applied state matches current state, it's a no-op. If not, it patches. The cache staleness is irrelevant because the write path never consulted the cache.
 
 The common thread: never assume that a write you just performed is visible in the cache. Design your Reconcile function to be correct regardless of which version of the data it sees. If it sees stale data, the worst case is an extra reconciliation -- which is exactly what level-triggered design gives you for free.
+
+---
+
+Previous: [Overview](00-overview.md) | Next: [Webhooks](02-webhooks.md)

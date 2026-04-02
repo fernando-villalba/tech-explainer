@@ -340,3 +340,7 @@ The trade-off is obvious: slower, needs infrastructure, leaves state in the clus
 **Clean up between tests.** envtest doesn't reset state between tests. Objects created in one test persist to the next. Use unique namespaces per test, or delete objects in `AfterEach`. The namespace lifecycle controller doesn't run either, so deleting a namespace doesn't delete its contents -- delete individual objects explicitly.
 
 **Kill stale processes after test failures.** If a test panics or is killed mid-run, the etcd and kube-apiserver processes may be left running. Multigres's [CLAUDE.md](https://github.com/multigres/multigres-operator/blob/main/CLAUDE.md) explicitly notes this: kill hanging `kube-apiserver` and `etcd` processes after tasks. A simple `pkill -f kube-apiserver; pkill -f etcd` in your CI cleanup step prevents port conflicts and resource leaks.
+
+---
+
+Previous: [Manager Lifecycle](03-manager-lifecycle.md)

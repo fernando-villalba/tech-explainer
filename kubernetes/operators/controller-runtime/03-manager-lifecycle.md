@@ -256,3 +256,7 @@ When the manager hangs during startup, it's almost always one of these:
 **Leader election takes too long.** In fresh deployments, the first leader acquisition is fast (no existing lease). But if a previous leader left a lease with 15 seconds remaining, the new leader waits up to `LeaseDuration` before it can acquire. During this window, the manager is running but no controllers are active. This is normal. If it's too slow, reduce `LeaseDuration` -- but be careful, because shorter leases increase the risk of split-brain during API server partitions. `LeaderElectionReleaseOnCancel` (as multigres uses) eliminates this wait during clean rollouts by releasing the lease before the Pod terminates.
 
 **Certificate bootstrap fails.** If you manage your own webhook certificates (like multigres does internally), the bootstrap must complete before the webhook server starts. If the CA can't be generated or the cert files can't be written, the webhook server starts with no certificates and every TLS handshake fails. Ensure your cert bootstrap runs before `mgr.Start()`, not inside a runnable.
+
+---
+
+Previous: [Webhooks](02-webhooks.md) | Next: [Testing with envtest](04-testing-with-envtest.md)

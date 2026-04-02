@@ -218,3 +218,7 @@ Use webhooks for things that must be enforced at admission time: defaults that o
 Multigres draws this line clearly. The webhook handles template resolution (the defaulter ensures every cluster has a fully resolved spec before it reaches etcd) and constraint validation (no storage shrink, referential integrity, no direct child modification). Everything else -- creating Cells, managing Shards, draining pods, registering topology -- lives in controllers. The webhook is a gate. The controllers are the convergence engine.
 
 If you find yourself putting complex business logic in a webhook, pause. Ask whether the same constraint could be enforced by a controller that watches objects after creation and either fixes them or marks them as invalid. Controllers are more resilient, more testable, and more debuggable than webhooks. Webhooks are for gates. Controllers are for convergence.
+
+---
+
+Previous: [The Cache and Client](01-cache-and-client.md) | Next: [Manager Lifecycle](03-manager-lifecycle.md)
