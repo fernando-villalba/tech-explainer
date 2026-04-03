@@ -20,13 +20,39 @@ After covering these three layers, this explainer maps them to controller-runtim
 
 Everything in client-go starts with `rest.Config`. This struct holds the connection to the API server: host URL, authentication (bearer token, client certificates, or auth plugins), TLS settings (CA certificate to verify the API server, and optionally client certificates for mutual TLS authentication), rate limiting, and timeout configuration.
 
+With raw client-go, there are two ways to get a config:
+
 ```go
-config, err := ctrl.GetConfigOrDie()
+// Running inside a pod -- reads the service account token
+// from /var/run/secrets/kubernetes.io/serviceaccount/
+config, err := rest.InClusterConfig()
+
+// Running on your laptop -- reads from ~/.kube/config
+config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 ```
 
-That one-liner from controller-runtime calls `rest.InClusterConfig()` when running in a pod (reads the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/`) or falls back to the kubeconfig file on your laptop. Either way, you get a `rest.Config`.
+controller-runtime wraps both into one call that auto-detects the environment:
 
-Every client in client-go -- the typed clientset, the dynamic client, controller-runtime's client -- builds on top of a `rest.RESTClient` constructed from this config. The RESTClient handles HTTP verb mapping (GET, POST, PUT, PATCH, DELETE), content negotiation (JSON or protobuf), request retry, and rate limiting. You almost never use it directly, but it's the bottom of the stack.
+```go
+config := ctrl.GetConfigOrDie()  // tries InClusterConfig(), falls back to kubeconfig
+```
+
+Once you have a `rest.Config`, you can create any client from it. A typed clientset, a dynamic client, or a raw uncached controller-runtime client:
+
+```go
+// Typed clientset (client-go)
+clientset, err := kubernetes.NewForConfig(config)
+
+// Dynamic client (client-go)
+dynamicClient, err := dynamic.NewForConfig(config)
+
+// Uncached generic client (controller-runtime, no Manager needed)
+directClient, err := client.New(config, client.Options{Scheme: scheme})
+```
+
+The `client.New()` call is what the multigres-operator uses for its pre-Manager webhook bootstrap. It creates a controller-runtime client that talks directly to the API server on every call, with no cache and no informers. It's the controller-runtime equivalent of creating a clientset, but generic (works with any type in the Scheme, including CRDs).
+
+Every client in client-go builds on top of a `rest.RESTClient` constructed from the config. The RESTClient handles HTTP verb mapping (GET, POST, PUT, PATCH, DELETE), content negotiation (JSON or protobuf), request retry, and rate limiting. You almost never use it directly, but it's the bottom of the stack.
 
 ## The Clientset ([kubernetes](https://github.com/kubernetes/client-go/tree/master/kubernetes))
 
