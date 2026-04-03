@@ -40,17 +40,19 @@ config := ctrl.GetConfigOrDie()  // tries InClusterConfig(), falls back to kubec
 Once you have a `rest.Config`, you can create any client from it. A typed clientset, a dynamic client, or a raw uncached controller-runtime client:
 
 ```go
-// Typed clientset (client-go)
+// Typed clientset (client-go) -- hits the API server directly on every call
 clientset, err := kubernetes.NewForConfig(config)
 
-// Dynamic client (client-go)
+// Dynamic client (client-go) -- hits the API server directly on every call
 dynamicClient, err := dynamic.NewForConfig(config)
 
-// Uncached generic client (controller-runtime, no Manager needed)
+// Generic client (controller-runtime) -- also hits the API server directly on every call
 directClient, err := client.New(config, client.Options{Scheme: scheme})
 ```
 
-The `client.New()` call is what the multigres-operator uses for its pre-Manager webhook bootstrap. It creates a controller-runtime client that talks directly to the API server on every call, with no cache and no informers. It's the controller-runtime equivalent of creating a clientset, but generic (works with any type in the Scheme, including CRDs).
+All three talk directly to the API server. None of them cache anything. The *only* cached client is the one the Manager provides via `mgr.GetClient()` after startup -- that's the split client where reads go through the informer cache and writes go to the API server. But the Manager doesn't exist yet during bootstrap, so these direct clients are the only option.
+
+The difference between the three is what they accept: the clientset has type-specific methods per resource (`CoreV1().Pods().Get()`), the dynamic client works with any resource as raw maps, and `client.New()` works with any Go type registered in the Scheme (including CRDs). The multigres-operator uses `client.New()` for its pre-Manager [webhook bootstrap](https://github.com/multigres/multigres-operator/blob/07acad254c7b77dcbbf3ebdb8a228d867e62ee0a/cmd/multigres-operator/main.go#L221-L240) because it needs to read and patch CRD-aware objects (webhook configurations) that the clientset doesn't know about.
 
 Every client in client-go builds on top of a `rest.RESTClient` constructed from the config. The RESTClient handles HTTP verb mapping (GET, POST, PUT, PATCH, DELETE), content negotiation (JSON or protobuf), request retry, and rate limiting. You almost never use it directly, but it's the bottom of the stack.
 
