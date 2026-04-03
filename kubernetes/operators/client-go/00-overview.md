@@ -93,18 +93,28 @@ mgr, err := ctrl.NewManager(config, ctrl.Options{...})  // Manager created after
 
 ## The Dynamic Client ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
 
-The dynamic client operates on `unstructured.Unstructured` -- a wrapper around `map[string]interface{}`. No Go types needed. You specify the resource by its GVR (GroupVersionResource) and work with raw data:
+The clientset and controller-runtime's client both work with typed Go structs. `&corev1.Pod{}` is a struct with typed fields -- `pod.Spec.Containers[0].Image` is a string, the compiler catches typos, autocomplete works. But this only works for types you have Go structs for at compile time.
+
+The dynamic client skips Go types entirely. Instead of a typed struct, every object is an `unstructured.Unstructured` -- a raw JSON-like map (`map[string]interface{}`). You navigate fields with string keys:
 
 ```go
 dynamicClient, err := dynamic.NewForConfig(config)
 result, err := dynamicClient.Resource(schema.GroupVersionResource{
-    Group:    "multigres.com",
-    Version:  "v1alpha1",
-    Resource: "multigresclusters",
-}).Namespace("default").Get(ctx, "my-cluster", metav1.GetOptions{})
+    Group:    "apps",
+    Version:  "v1",
+    Resource: "deployments",
+}).Namespace("default").Get(ctx, "my-app", metav1.GetOptions{})
+
+// Access fields by navigating the map -- no typed struct
+replicas, found, err := unstructured.NestedInt64(result.Object, "spec", "replicas")
+
+// Set a field
+unstructured.SetNestedField(result.Object, int64(5), "spec", "replicas")
 ```
 
-This is useful for generic tools that operate on arbitrary resource types, for controllers that manage CRDs they don't have compile-time types for, and for kubectl plugins. controller-runtime's client can also work with `unstructured.Unstructured`, but the dynamic client is what's underneath.
+No type safety. No autocomplete. If you typo `"replcias"` the compiler won't catch it. But it works for any resource type without needing Go structs compiled into the binary. This is useful for generic tools that operate on arbitrary CRDs (policy engines, backup tools, kubectl plugins), or controllers that don't know their resource types until runtime.
+
+Most operators don't use it because they know their types at compile time. The multigres-operator doesn't use the dynamic client in production code -- all its CRD types are defined in its `api/v1alpha1` package.
 
 ---
 
