@@ -52,17 +52,22 @@ This is useful for generic tools that operate on arbitrary resource types, for c
 
 This is the core of client-go and the most important thing to understand. When controller-runtime's cache serves you an object from `r.Get()`, it's reading from an informer's local store. The informer filled that store using a four-stage pipeline.
 
-**Stage 1: The Reflector.** A Reflector is responsible for keeping a local copy of a resource type in sync with the API server. It does this in two steps. First, it performs an initial LIST to get every existing object. Then it starts a long-lived WATCH connection that streams every subsequent change. The LIST provides a `resourceVersion`, and the WATCH starts from that version, so no changes are missed between the two operations.
+**Stage 1: The Reflector.** A Reflector is responsible for keeping a local copy of a resource type in sync with the API server. It does this in two steps. First, it performs an initial LIST to get every existing object. Then it starts a long-lived WATCH connection that streams every subsequent change.
+
+The `resourceVersion` threading between LIST and WATCH is critical. The LIST returns a `resourceVersion` representing the snapshot point. The Reflector stores this as `lastSyncResourceVersion` and passes it to the WATCH via `options.ResourceVersion = r.LastSyncResourceVersion()`. The WATCH starts from exactly that version, so every change that happened after the snapshot is delivered. No gap, no duplicates. If the watch connection drops and the server returns `410 Gone` (the version is too old for the watch history), the Reflector falls back to a full re-LIST and starts over.
 
 The Reflector pushes every object it receives -- from the initial list and from subsequent watch events -- into a DeltaFIFO queue.
 
-**Stage 2: The DeltaFIFO.** This queue stores `(key, []Delta)` pairs. Each Delta has a type -- `Added`, `Updated`, `Deleted`, `Replaced`, or `Sync` -- and the full object. The queue is FIFO (first-in, first-out), but it deduplicates by key: if a Pod changes three times before the consumer processes it, the queue holds all three deltas under one key, and the consumer sees them all at once.
+**Stage 2: The DeltaFIFO.** This queue stores `(key, []Delta)` pairs. Each Delta has a type and the full object. The primary types are `Added`, `Updated`, `Deleted`, `Replaced`, and `Sync` (newer versions also define `ReplacedAll` and `SyncAll` for batch operations). The queue is FIFO (first-in, first-out), but it deduplicates by key: if a Pod changes three times before the consumer processes it, the queue holds all three deltas under one key, and the consumer sees them all at once.
 
-`Replaced` happens during the initial LIST and periodic resyncs -- the entire set of objects is replaced. `Sync` is a periodic re-notification of existing objects, used to ensure handlers eventually see every object even if a watch event was missed.
+`Replaced` and `Sync` are distinct despite looking similar:
+
+- **`Replaced`** fires when `Replace()` is called on the DeltaFIFO -- during the initial LIST and on any full re-list triggered by a watch error (the `410 Gone` case). The entire object set is re-ingested. Objects in the store that aren't in the replacement set get a `Deleted` delta. (Historically, `Replaced` didn't exist as a separate type -- `Sync` was used for both. The `EmitDeltaTypeReplaced` flag controls which type is emitted, for backwards compatibility.)
+- **`Sync`** fires on a periodic resync timer. No API server call is made. The Indexer's existing objects are re-pushed through the DeltaFIFO purely in-process. This re-drives the event handlers with the current known state, ensuring handlers eventually process every object even if a watch event was missed or a handler didn't act on a previous notification.
 
 **Stage 3: The Indexer.** The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The default index is `MetaNamespaceKeyFunc`, which indexes objects by `namespace/name`. You can add custom indexes for efficient lookups by label, field, or any computed key.
 
-This is the store that controller-runtime's cache reads from. When you call `r.Get(ctx, types.NamespacedName{Name: "foo", Namespace: "bar"}, &obj)`, you're doing a lookup in this indexer. No network call.
+This is the store that controller-runtime's cache reads from. When you call `r.Get(ctx, types.NamespacedName{Name: "foo", Namespace: "bar"}, &obj)`, you're doing a lookup in this indexer by the `namespace/name` key. No network call. When you call `r.List()` with a field selector, controller-runtime can use custom indexes (added via `mgr.GetFieldIndexer().IndexField(...)`) to do an indexed lookup instead of scanning every object in the store. This is why operator setup code sometimes pre-computes field indexes -- it turns O(n) list operations into O(1) lookups.
 
 **Stage 4: The Event Handlers.** After updating the store, the informer calls registered `ResourceEventHandler` callbacks:
 
@@ -74,7 +79,11 @@ type ResourceEventHandler interface {
 }
 ```
 
+The `isInInitialList` parameter on `OnAdd` lets handlers distinguish between objects seen during the initial LIST sync and objects that arrived via a live WATCH event. controller-runtime uses this internally to track whether the cache has fully synced -- `cache.WaitForCacheSync()` blocks until every initial-list object has been processed, which is what prevents controllers from reconciling before the cache has a complete picture.
+
 controller-runtime registers handlers that extract the object's key (or the owner's key, depending on the watch configuration) and push it onto the workqueue. This is how "Pod changed" becomes "reconcile the ReplicaSet that owns this Pod."
+
+**Stage 4.5: The Workqueue.** There's an implicit stage between the event handlers and the Reconcile function. The handlers don't call Reconcile directly. They push keys onto a rate-limited workqueue. The workqueue deduplicates (if a key is already queued, a second add is a no-op), rate-limits (exponential backoff on requeue after errors), and tracks in-flight items for clean shutdown. This is why multiple rapid changes to a Pod don't cause multiple reconcile calls -- by the time the worker goroutine picks up the key, duplicate entries have been collapsed. The workqueue is covered in detail in the next section.
 
 **The SharedInformer.** A SharedInformer wraps all four stages into one unit. "Shared" means one informer per GVK is shared across all controllers that watch that type. If three controllers all watch Pods, they share one Pod informer -- one LIST, one WATCH connection, one store. Each controller registers its own event handler on the shared informer.
 
@@ -84,7 +93,7 @@ controller-runtime's cache creates and manages these shared informers. When you 
 
 The workqueue is what sits between "an event happened" and "Reconcile is called." client-go provides three queue interfaces, each layering on the previous:
 
-**TypedInterface** -- the base queue. `Add(item)`, `Get()`, `Done(item)`, `ShutDown()`. The critical property: *deduplication*. If you `Add("default/my-pod")` while that key is already in the queue or being processed, the item isn't duplicated. This is why controller-runtime can safely enqueue the same object many times -- rapid-fire events don't cause rapid-fire reconciliations.
+**TypedInterface** -- the base queue. `Add(item)`, `Get()`, `Done(item)`, `ShutDown()`. The critical property: *deduplication*. If you `Add("default/my-pod")` while that key is already in the `dirty` set, it won't be queued again (though `Touch()` may be called to adjust priority if the queue implementation supports it). If the item is currently being processed and gets re-added, it's marked dirty and will be re-queued after the current processing completes. This is why controller-runtime can safely enqueue the same object many times -- rapid-fire events don't cause rapid-fire reconciliations.
 
 **TypedDelayingInterface** -- adds `AddAfter(item, duration)`. The item enters the queue after the delay. This powers `Result{RequeueAfter: 5 * time.Second}` in your Reconcile function.
 
@@ -168,7 +177,7 @@ err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 })
 ```
 
-`DefaultRetry` tries 5 times with 10ms intervals and slight jitter. `DefaultBackoff` uses exponential backoff (factor 5.0) for situations where contention is heavy.
+`DefaultRetry` tries 5 times with flat 10ms intervals and slight jitter (factor 1.0, so no exponential growth -- just 5 quick retries). `DefaultBackoff` uses exponential backoff (factor 5.0, so 10ms, 50ms, 250ms, 1250ms) for situations where contention is heavy and backing off gives other writers time to finish.
 
 Most controller-runtime operators don't need this -- the reconciliation loop naturally handles conflicts by re-reading on the next reconcile. But when you need an atomic read-modify-write within a single reconciliation (status updates that must succeed before proceeding), `RetryOnConflict` is the tool.
 
