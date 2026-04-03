@@ -313,7 +313,23 @@ Building an operator on raw client-go means writing and maintaining all of the f
 
 - **Workqueue wiring.** You need to create a rate-limiting workqueue, wire event handlers from each informer to enqueue the right keys (the object itself, its owner, or a custom mapping), handle the `Get`/`Done`/`Forget` lifecycle for each item, and implement the worker loop that dequeues and calls your reconciliation logic. controller-runtime's Builder and internal controller handle all of this.
 
-- **Cache-backed reads with API server writes.** With raw client-go, you either read from the informer's lister (cached, eventually consistent) or from the API server (fresh, expensive). You have to choose per call. controller-runtime's split client does this transparently: `Get` and `List` hit the cache, `Create`/`Update`/`Patch`/`Delete` hit the API server.
+- **Cache-backed reads with API server writes.** With raw client-go, you set up informers separately from the clientset, read from listers, and write through the clientset. You manage both and you choose which to use per call:
+
+  ```go
+  // Setup: create informer factory, start it, wait for sync
+  factory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
+  podInformer := factory.Core().V1().Pods()
+  factory.Start(stopCh)
+  factory.WaitForCacheSync(stopCh)
+
+  // Cached read -- local Indexer, no API call
+  pod, err := podInformer.Lister().Pods("default").Get("my-pod")
+
+  // Uncached write -- hits the API server
+  _, err = clientset.CoreV1().Pods("default").Update(ctx, pod, metav1.UpdateOptions{})
+  ```
+
+  controller-runtime's `mgr.GetClient()` does this split automatically. `Get` and `List` go through the lister. `Create`, `Update`, `Patch`, `Delete` go through the REST client. One client, no manual wiring.
 
 - **Startup sequencing.** HTTP servers (health, metrics, pprof) need to start before the cache. Webhooks need to start before the cache (to avoid conversion webhook deadlocks). The cache needs to sync before controllers start. Leader election needs to gate the controllers. With client-go you sequence all of this manually. controller-runtime's Manager handles the six-phase startup in the correct order.
 
