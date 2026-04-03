@@ -18,7 +18,7 @@ After covering these three layers, this explainer maps them to controller-runtim
 
 ## The REST Client ([rest](https://github.com/kubernetes/client-go/tree/master/rest))
 
-Everything in client-go starts with `rest.Config`. This struct holds the connection to the API server: host URL, authentication (bearer token, client certificates, or auth plugins), TLS settings, rate limiting, and timeout configuration.
+Everything in client-go starts with `rest.Config`. This struct holds the connection to the API server: host URL, authentication (bearer token, client certificates, or auth plugins), TLS settings (CA certificate to verify the API server, and optionally client certificates for mutual TLS authentication), rate limiting, and timeout configuration.
 
 ```go
 config, err := ctrl.GetConfigOrDie()
