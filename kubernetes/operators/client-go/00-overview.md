@@ -39,7 +39,7 @@ pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
 
 One method per resource per verb. `CoreV1().Pods()` returns a `PodInterface` with `Get`, `List`, `Create`, `Update`, `Delete`, `Patch`, `Watch`. The types are generated from the OpenAPI schema of the Kubernetes API. Every field is typed. Every response is deserialized into the correct Go struct.
 
-controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. But the multigres-operator uses the clientset directly in specific situations: webhook handlers that need a raw client before the Manager's cache is running, and test utilities that create typed clients for cluster setup.
+controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. The multigres-operator uses the clientset in its test utilities (creating Kind clusters, waiting for pods, dumping logs) where a typed client is more convenient. It also creates a raw uncached `client.New()` before the Manager starts for webhook certificate bootstrapping -- checking cert annotations, finding the operator deployment, and patching CA bundles into webhook configurations. The Manager's cache doesn't exist yet at that point, so a direct client is the only option.
 
 ## The Dynamic Client ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
 
