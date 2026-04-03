@@ -2,13 +2,21 @@
 
 When you write a Kubernetes operator with controller-runtime, you call `r.Get()` to read an object, `r.List()` to list them, `r.Update()` to write changes back. You call `ctrl.NewControllerManagedBy(mgr).For(&MyType{}).Owns(&appsv1.Deployment{}).Complete(r)` and the framework handles the rest. Events flow in. Reconcile functions run. Objects converge.
 
-None of that is magic. It's six client-go subsystems wired together.
+controller-runtime is a wiring layer on top of client-go. Every abstraction you use in controller-runtime maps directly to a client-go primitive. Understanding these primitives won't change how you write Reconcile functions. But it will change how you debug them.
 
-controller-runtime's Cache is a set of SharedInformers from `client-go/tools/cache`. The workqueue that deduplicates events and backs off on failures is `client-go/util/workqueue`. The Client that reads from cache and writes to the API server uses `client-go/rest` underneath. Leader election is `client-go/tools/leaderelection`. Event recording is `client-go/tools/record`. Every abstraction you use in controller-runtime maps directly to a client-go primitive.
+client-go has three layers:
 
-Understanding these primitives won't change how you write Reconcile functions. But it will change how you debug them. When the cache serves stale data, you'll know it's because the Reflector's watch stream hasn't delivered the event yet. When an object gets requeued with increasing delays, you'll know it's the rate-limiting workqueue applying exponential backoff. When leader election takes 15 seconds to fail over, you'll know it's the LeaseDuration minus the RenewDeadline.
+1. **Clients** -- how you talk to the API server (REST client, typed clientset, dynamic client)
+2. **The informer pipeline** -- how the API server's state gets into local memory (Reflector, DeltaFIFO, Indexer, event handlers, workqueue)
+3. **Utilities** -- tools operators use directly alongside controller-runtime (event recording, leader election, retry)
 
-## The REST Client: Where Every Request Starts ([rest](https://github.com/kubernetes/client-go/tree/master/rest))
+After covering these three layers, this explainer maps them to controller-runtime, compares the APIs side by side, and shows what controller-runtime saves you from building yourself.
+
+---
+
+# Part 1: Clients
+
+## The REST Client ([rest](https://github.com/kubernetes/client-go/tree/master/rest))
 
 Everything in client-go starts with `rest.Config`. This struct holds the connection to the API server: host URL, authentication (bearer token, client certificates, or auth plugins), TLS settings, rate limiting, and timeout configuration.
 
@@ -20,7 +28,7 @@ That one-liner from controller-runtime calls `rest.InClusterConfig()` when runni
 
 Every client in client-go -- the typed clientset, the dynamic client, controller-runtime's client -- builds on top of a `rest.RESTClient` constructed from this config. The RESTClient handles HTTP verb mapping (GET, POST, PUT, PATCH, DELETE), content negotiation (JSON or protobuf), request retry, and rate limiting. You almost never use it directly, but it's the bottom of the stack.
 
-## The Clientset: Type-Safe Access to Built-in Resources ([kubernetes](https://github.com/kubernetes/client-go/tree/master/kubernetes))
+## The Clientset ([kubernetes](https://github.com/kubernetes/client-go/tree/master/kubernetes))
 
 The `kubernetes` package provides a generated, type-safe client for every built-in Kubernetes resource:
 
@@ -33,7 +41,7 @@ One method per resource per verb. `CoreV1().Pods()` returns a `PodInterface` wit
 
 controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. But the multigres-operator uses the clientset directly in specific situations: webhook handlers that need a raw client before the Manager's cache is running, and test utilities that create typed clients for cluster setup.
 
-## The Dynamic Client: When You Don't Have Go Types ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
+## The Dynamic Client ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
 
 The dynamic client operates on `unstructured.Unstructured` -- a wrapper around `map[string]interface{}`. No Go types needed. You specify the resource by its GVR (GroupVersionResource) and work with raw data:
 
@@ -48,28 +56,38 @@ result, err := dynamicClient.Resource(schema.GroupVersionResource{
 
 This is useful for generic tools that operate on arbitrary resource types, for controllers that manage CRDs they don't have compile-time types for, and for kubectl plugins. controller-runtime's client can also work with `unstructured.Unstructured`, but the dynamic client is what's underneath.
 
-## The Informer Pipeline: From API Server to Local Cache ([tools/cache](https://github.com/kubernetes/client-go/tree/master/tools/cache))
+---
 
-This is the core of client-go and the most important thing to understand. When controller-runtime's cache serves you an object from `r.Get()`, it's reading from an informer's local store. The informer filled that store using a four-stage pipeline.
+# Part 2: The Informer Pipeline
 
-**Stage 1: The Reflector.** A Reflector is responsible for keeping a local copy of a resource type in sync with the API server. It does this in two steps. First, it performs an initial LIST to get every existing object. Then it starts a long-lived WATCH connection that streams every subsequent change.
+This is the core of client-go. When controller-runtime's cache serves you an object from `r.Get()`, it's reading from an informer's local store. The informer filled that store through a pipeline with four stages, plus a workqueue that sits between the pipeline and your Reconcile function.
+
+## Stage 1: The Reflector ([tools/cache](https://github.com/kubernetes/client-go/tree/master/tools/cache))
+
+A Reflector keeps a local copy of a resource type in sync with the API server. It does this in two steps. First, it performs an initial LIST to get every existing object. Then it starts a long-lived WATCH connection that streams every subsequent change.
 
 The `resourceVersion` threading between LIST and WATCH is critical. The LIST returns a `resourceVersion` representing the snapshot point. The Reflector stores this as `lastSyncResourceVersion` and passes it to the WATCH via `options.ResourceVersion = r.LastSyncResourceVersion()`. The WATCH starts from exactly that version, so every change that happened after the snapshot is delivered. No gap, no duplicates. If the watch connection drops and the server returns `410 Gone` (the version is too old for the watch history), the Reflector falls back to a full re-LIST and starts over.
 
 The Reflector pushes every object it receives -- from the initial list and from subsequent watch events -- into a DeltaFIFO queue.
 
-**Stage 2: The DeltaFIFO.** This queue stores `(key, []Delta)` pairs. Each Delta has a type and the full object. The primary types are `Added`, `Updated`, `Deleted`, `Replaced`, and `Sync` (newer versions also define `ReplacedAll` and `SyncAll` for batch operations). The queue is FIFO (first-in, first-out), but it deduplicates by key: if a Pod changes three times before the consumer processes it, the queue holds all three deltas under one key, and the consumer sees them all at once.
+## Stage 2: The DeltaFIFO
+
+The DeltaFIFO stores `(key, []Delta)` pairs. Each Delta has a type and the full object. The primary types are `Added`, `Updated`, `Deleted`, `Replaced`, and `Sync` (newer versions also define `ReplacedAll` and `SyncAll` for batch operations). The queue is FIFO (first-in, first-out), but it deduplicates by key: if a Pod changes three times before the consumer processes it, the queue holds all three deltas under one key, and the consumer sees them all at once.
 
 `Replaced` and `Sync` are distinct despite looking similar:
 
 - **`Replaced`** fires when `Replace()` is called on the DeltaFIFO -- during the initial LIST and on any full re-list triggered by a watch error (the `410 Gone` case). The entire object set is re-ingested. Objects in the store that aren't in the replacement set get a `Deleted` delta. (Historically, `Replaced` didn't exist as a separate type -- `Sync` was used for both. The `EmitDeltaTypeReplaced` flag controls which type is emitted, for backwards compatibility.)
 - **`Sync`** fires on a periodic resync timer. No API server call is made. The Indexer's existing objects are re-pushed through the DeltaFIFO purely in-process. This re-drives the event handlers with the current known state, ensuring handlers eventually process every object even if a watch event was missed or a handler didn't act on a previous notification.
 
-**Stage 3: The Indexer.** The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The default index is `MetaNamespaceKeyFunc`, which indexes objects by `namespace/name`. You can add custom indexes for efficient lookups by label, field, or any computed key.
+## Stage 3: The Indexer
+
+The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The default index is `MetaNamespaceKeyFunc`, which indexes objects by `namespace/name`. You can add custom indexes for efficient lookups by label, field, or any computed key.
 
 This is the store that controller-runtime's cache reads from. When you call `r.Get(ctx, types.NamespacedName{Name: "foo", Namespace: "bar"}, &obj)`, you're doing a lookup in this indexer by the `namespace/name` key. No network call. When you call `r.List()` with a field selector, controller-runtime can use custom indexes (added via `mgr.GetFieldIndexer().IndexField(...)`) to do an indexed lookup instead of scanning every object in the store. This is why operator setup code sometimes pre-computes field indexes -- it turns O(n) list operations into O(1) lookups.
 
-**Stage 4: The Event Handlers.** After updating the store, the informer calls registered `ResourceEventHandler` callbacks:
+## Stage 4: The Event Handlers
+
+After updating the store, the informer calls registered `ResourceEventHandler` callbacks:
 
 ```go
 type ResourceEventHandler interface {
@@ -83,15 +101,11 @@ The `isInInitialList` parameter on `OnAdd` lets handlers distinguish between obj
 
 controller-runtime registers handlers that extract the object's key (or the owner's key, depending on the watch configuration) and push it onto the workqueue. This is how "Pod changed" becomes "reconcile the ReplicaSet that owns this Pod."
 
-**Stage 4.5: The Workqueue.** There's an implicit stage between the event handlers and the Reconcile function. The handlers don't call Reconcile directly. They push keys onto a rate-limited workqueue. The workqueue deduplicates (if a key is already queued, a second add is a no-op), rate-limits (exponential backoff on requeue after errors), and tracks in-flight items for clean shutdown. This is why multiple rapid changes to a Pod don't cause multiple reconcile calls -- by the time the worker goroutine picks up the key, duplicate entries have been collapsed. The workqueue is covered in detail in the next section.
+## Stage 5: The Workqueue ([util/workqueue](https://github.com/kubernetes/client-go/tree/master/util/workqueue))
 
-**The SharedInformer.** A SharedInformer wraps all four stages into one unit. "Shared" means one informer per GVK is shared across all controllers that watch that type. If three controllers all watch Pods, they share one Pod informer -- one LIST, one WATCH connection, one store. Each controller registers its own event handler on the shared informer.
+The handlers don't call Reconcile directly. They push keys onto a rate-limited workqueue. This is the final stage before your code runs.
 
-controller-runtime's cache creates and manages these shared informers. When you call `For(&MyType{})` in the builder, the cache ensures a SharedInformer exists for `MyType`. When you call `Owns(&appsv1.Deployment{})`, it ensures a SharedInformer exists for Deployments.
-
-## The Workqueue: Deduplication, Delay, and Backoff ([util/workqueue](https://github.com/kubernetes/client-go/tree/master/util/workqueue))
-
-The workqueue is what sits between "an event happened" and "Reconcile is called." client-go provides three queue interfaces, each layering on the previous:
+client-go provides three queue interfaces, each layering on the previous:
 
 **TypedInterface** -- the base queue. `Add(item)`, `Get()`, `Done(item)`, `ShutDown()`. The critical property: *deduplication*. If you `Add("default/my-pod")` while that key is already in the `dirty` set, it won't be queued again (though `Touch()` may be called to adjust priority if the queue implementation supports it). If the item is currently being processed and gets re-added, it's marked dirty and will be re-queued after the current processing completes. This is why controller-runtime can safely enqueue the same object many times -- rapid-fire events don't cause rapid-fire reconciliations.
 
@@ -109,7 +123,19 @@ When Reconcile succeeds (returns `nil, nil`), controller-runtime calls `Forget(i
 
 This is why a single broken object doesn't take down your operator. It backs off exponentially while other objects process normally.
 
-## Event Recording: Making Reconciliation Visible ([tools/record](https://github.com/kubernetes/client-go/tree/master/tools/record))
+## The SharedInformer
+
+A SharedInformer wraps Stages 1 through 4 into one unit. "Shared" means one informer per GVK is shared across all controllers that watch that type. If three controllers all watch Pods, they share one Pod informer -- one LIST, one WATCH connection, one store. Each controller registers its own event handler on the shared informer.
+
+controller-runtime's cache creates and manages these shared informers. When you call `For(&MyType{})` in the builder, the cache ensures a SharedInformer exists for `MyType`. When you call `Owns(&appsv1.Deployment{})`, it ensures a SharedInformer exists for Deployments.
+
+---
+
+# Part 3: Utilities
+
+These are client-go packages that operators use directly, even when using controller-runtime. controller-runtime wraps some of them (event recording, leader election) but exposes the same interfaces. Others (retry) aren't wrapped at all.
+
+## Event Recording ([tools/record](https://github.com/kubernetes/client-go/tree/master/tools/record))
 
 `tools/record` provides the `EventRecorder` interface:
 
@@ -141,7 +167,7 @@ r.Recorder.Eventf(shard, "Warning", "ConfigError", "Failed to generate pg_hba: %
 
 This creates a Kubernetes Event tied to the Shard object. `kubectl describe shard my-shard` shows it. Events aggregate automatically -- the same reason/message combination on the same object doesn't create thousands of Event objects.
 
-## Leader Election: One Active Replica at a Time ([tools/leaderelection](https://github.com/kubernetes/client-go/tree/master/tools/leaderelection))
+## Leader Election ([tools/leaderelection](https://github.com/kubernetes/client-go/tree/master/tools/leaderelection))
 
 `tools/leaderelection` implements leader election using Kubernetes Lease objects. A `LeaderElector` performs the election and calls three callbacks:
 
@@ -151,13 +177,13 @@ This creates a Kubernetes Event tied to the Shard object. `kubectl describe shar
 
 The leader holds a Lease object and periodically renews it. If it fails to renew within the `LeaseDuration`, other replicas detect the stale lease and one of them acquires it. Three parameters control the timing:
 
-- `LeaseDuration` -- how long a lease is valid (default 15s)
+- `LeaseDuration` -- how long a lease is valid (default 15s in controller-runtime)
 - `RenewDeadline` -- how long the leader tries to renew before giving up (default 10s)
 - `RetryPeriod` -- how often non-leaders check the lease (default 2s)
 
 controller-runtime's Manager wraps this entirely. When you set `LeaderElection: true` in the Manager options, it runs `LeaderElector` and only starts controllers after winning the election. The multigres-operator enables `LeaderElectionReleaseOnCancel` so the outgoing leader voluntarily releases the lease on clean shutdown, cutting failover time from ~15 seconds to ~2 seconds.
 
-## Retry Utilities: Handling Optimistic Concurrency ([util/retry](https://github.com/kubernetes/client-go/tree/master/util/retry))
+## Retry Utilities ([util/retry](https://github.com/kubernetes/client-go/tree/master/util/retry))
 
 Kubernetes uses optimistic concurrency. Every object has a `resourceVersion`. When you update an object, the API server rejects the write if the `resourceVersion` doesn't match -- someone else modified the object between your read and your write. The error is a `Conflict` (HTTP 409).
 
@@ -181,11 +207,15 @@ err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 
 Most controller-runtime operators don't need this -- the reconciliation loop naturally handles conflicts by re-reading on the next reconcile. But when you need an atomic read-modify-write within a single reconciliation (status updates that must succeed before proceeding), `RetryOnConflict` is the tool.
 
+---
+
+# Part 4: client-go and controller-runtime
+
 ## How Much Do Real Operators Use client-go Directly?
 
 More than you'd think. controller-runtime wraps the core loop, but most production operators still import client-go for things controller-runtime doesn't cover. A survey of major operators:
 
-- **multigres-operator**: 41 files import client-go directly. Uses `kubernetes.Clientset` for pre-cache operations, `tools/record` for event recording, `tools/cache` for custom indexers, `util/retry` for conflict retries, `tools/portforward` and `transport/spdy` for e2e test port forwarding.
+- **[multigres-operator](https://github.com/multigres/multigres-operator)**: 41 files import client-go directly. Uses `kubernetes.Clientset` for pre-cache operations, `tools/record` for event recording, `tools/cache` for custom indexers, `util/retry` for conflict retries, `tools/portforward` and `transport/spdy` for e2e test port forwarding.
 - **[CloudNative-PG](https://github.com/cloudnative-pg/cloudnative-pg)**: 14 client-go packages. Uses `discovery` for API discovery, `dynamic` for unstructured access, `tools/remotecommand` for exec into pods, `util/retry`.
 - **[Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator)**: 27 client-go packages. Uses raw `informers`, `listers`, `util/workqueue`, typed clients (`typed/core/v1`, `typed/apps/v1`), `discovery`, `metadata` informers. Large parts of the codebase work directly with client-go alongside controller-runtime.
 - **[cert-manager](https://github.com/cert-manager/cert-manager)**: 38 client-go packages. Uses `informers`, `listers`, `tools/leaderelection` directly, `applyconfigurations` for SSA, `util/workqueue`, `metadata` informers and listers. The most extensive direct client-go usage of any operator surveyed.
@@ -250,8 +280,10 @@ The Zalando Postgres Operator, built directly on client-go, implements all of th
 
 Every line in that table is a direct wrapping relationship. controller-runtime doesn't reimplement any of these. It configures them, connects them, and exposes a simpler API on top.
 
+---
+
 ## The Unifying Idea
 
 controller-runtime is not an abstraction layer that hides client-go. It's a wiring layer that connects client-go's subsystems. The Reflector fills the cache. The cache serves your reads. Event handlers push keys onto the workqueue. The workqueue feeds your Reconcile function. The rate limiter controls the backoff. The leader elector gates the whole thing behind a single active replica.
 
-Next time your operator behaves unexpectedly -- stale reads, delayed reconciliations, leader election hiccups -- you won't be guessing at abstractions. You'll trace the problem through the pipeline: Reflector to DeltaFIFO to Indexer to event handler to workqueue to Reconcile. Six subsystems, one straight line.
+Next time your operator behaves unexpectedly -- stale reads, delayed reconciliations, leader election hiccups -- you won't be guessing at abstractions. You'll trace the problem through the pipeline: Reflector to DeltaFIFO to Indexer to event handler to workqueue to Reconcile.
