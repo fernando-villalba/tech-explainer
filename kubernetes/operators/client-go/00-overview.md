@@ -39,7 +39,31 @@ pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
 
 One method per resource per verb. `CoreV1().Pods()` returns a `PodInterface` with `Get`, `List`, `Create`, `Update`, `Delete`, `Patch`, `Watch`. The types are generated from the OpenAPI schema of the Kubernetes API. Every field is typed. Every response is deserialized into the correct Go struct.
 
-controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. The multigres-operator uses the clientset in its test utilities (creating Kind clusters, waiting for pods, dumping logs) where a typed client is more convenient. It also creates a raw uncached `client.New()` before the Manager starts for webhook certificate bootstrapping -- checking cert annotations, finding the operator deployment, and patching CA bundles into webhook configurations. The Manager's cache doesn't exist yet at that point, so a direct client is the only option.
+controller-runtime replaces this with its generic `client.Client` interface -- `r.Get(ctx, key, &pod)` works for any type, built-in or custom. The multigres-operator uses the clientset in its [test utilities](https://github.com/multigres/multigres-operator/blob/07acad254c7b77dcbbf3ebdb8a228d867e62ee0a/pkg/testutil/e2e.go) (creating Kind clusters, waiting for pods, dumping logs) where a typed client is more convenient.
+
+It also creates a raw uncached client before the Manager starts for webhook certificate bootstrapping in [main.go](https://github.com/multigres/multigres-operator/blob/07acad254c7b77dcbbf3ebdb8a228d867e62ee0a/cmd/multigres-operator/main.go#L221-L240). The Manager's cache doesn't exist yet at that point, so a direct client is the only option:
+
+```go
+// Before the Manager is created, the operator needs to detect its cert strategy.
+// No cache exists yet, so a raw uncached client talks directly to the API server.
+var tmpClient client.Client
+if webhookEnabled {
+    tmpClient, err = client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+    // ...
+    switch {
+    case !certsExist(webhookCertDir):
+        useInternalCerts = true
+    case multigreswebhook.HasCertAnnotation(context.Background(), tmpClient):
+        // Operator previously managed certs -- resume internal rotation
+        useInternalCerts = true
+    }
+}
+
+// ... later, tmpClient is used to find the operator Deployment (for owner references
+// on cert secrets) and to patch the CA bundle into webhook configurations.
+
+mgr, err := ctrl.NewManager(config, ctrl.Options{...})  // Manager created after bootstrap
+```
 
 ## The Dynamic Client ([dynamic](https://github.com/kubernetes/client-go/tree/master/dynamic))
 
