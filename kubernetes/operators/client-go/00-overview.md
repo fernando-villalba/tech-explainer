@@ -165,7 +165,9 @@ type DeltaFIFO struct {
 }
 ```
 
-The key is typically `namespace/name` (computed by `MetaNamespaceKeyFunc`). If a Pod changes three times before the consumer processes it, `items["default/my-pod"]` holds all three deltas, and the consumer sees them all at once. But `"default/my-pod"` only appears once in `queue`, so it's only popped once.
+The key is typically `namespace/name` (computed by `MetaNamespaceKeyFunc`). The key doesn't include the resource type because each DeltaFIFO belongs to a single informer, and each informer watches exactly one resource type. The DeltaFIFO for Pods only contains Pods. The DeltaFIFO for Deployments only contains Deployments. The type is implicit from which informer the queue belongs to.
+
+If a Pod changes three times before the consumer processes it, `items["default/my-pod"]` holds all three deltas, and the consumer sees them all at once. But `"default/my-pod"` only appears once in `queue`, so it's only popped once.
 
 `Replaced` and `Sync` are distinct despite looking similar:
 
