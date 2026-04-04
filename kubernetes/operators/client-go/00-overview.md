@@ -134,7 +134,38 @@ The Reflector pushes every object it receives -- from the initial list and from 
 
 ## Stage 2: The DeltaFIFO
 
-The DeltaFIFO stores `(key, []Delta)` pairs. Each Delta has a type and the full object. The primary types are `Added`, `Updated`, `Deleted`, `Replaced`, and `Sync` (newer versions also define `ReplacedAll` and `SyncAll` for batch operations). The queue is FIFO (first-in, first-out), but it deduplicates by key: if a Pod changes three times before the consumer processes it, the queue holds all three deltas under one key, and the consumer sees them all at once.
+The DeltaFIFO stores changes as `Delta` objects, each carrying a type and the full Kubernetes object:
+
+```go
+type DeltaType string
+
+const (
+    Added    DeltaType = "Added"
+    Updated  DeltaType = "Updated"
+    Deleted  DeltaType = "Deleted"
+    Replaced DeltaType = "Replaced"
+    Sync     DeltaType = "Sync"
+)
+
+type Delta struct {
+    Type   DeltaType
+    Object interface{}
+}
+
+type Deltas []Delta  // oldest at index 0, newest last
+```
+
+Internally, the DeltaFIFO is a map of keys to delta lists, plus a queue that maintains processing order:
+
+```go
+type DeltaFIFO struct {
+    items map[string]Deltas  // key -> list of deltas for that object
+    queue []string           // FIFO order of keys, no duplicates
+    // ...
+}
+```
+
+The key is typically `namespace/name` (computed by `MetaNamespaceKeyFunc`). If a Pod changes three times before the consumer processes it, `items["default/my-pod"]` holds all three deltas, and the consumer sees them all at once. But `"default/my-pod"` only appears once in `queue`, so it's only popped once.
 
 `Replaced` and `Sync` are distinct despite looking similar:
 
@@ -143,9 +174,43 @@ The DeltaFIFO stores `(key, []Delta)` pairs. Each Delta has a type and the full 
 
 ## Stage 3: The Indexer
 
-The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The default index is `MetaNamespaceKeyFunc`, which indexes objects by `namespace/name`. You can add custom indexes for efficient lookups by label, field, or any computed key.
+The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The Indexer extends the basic Store interface with indexed lookups:
 
-This is the store that controller-runtime's cache reads from. When you call `r.Get(ctx, types.NamespacedName{Name: "foo", Namespace: "bar"}, &obj)`, you're doing a lookup in this indexer by the `namespace/name` key. No network call. When you call `r.List()` with a field selector, controller-runtime can use custom indexes (added via `mgr.GetFieldIndexer().IndexField(...)`) to do an indexed lookup instead of scanning every object in the store. This is why operator setup code sometimes pre-computes field indexes -- it turns O(n) list operations into O(1) lookups.
+```go
+type Store interface {
+    Add(obj interface{}) error
+    Update(obj interface{}) error
+    Delete(obj interface{}) error
+    List() []interface{}
+    Get(obj interface{}) (interface{}, bool, error)
+    GetByKey(key string) (interface{}, bool, error)
+    // ...
+}
+
+type Indexer interface {
+    Store
+    // ByIndex returns all objects whose indexed value matches
+    ByIndex(indexName, indexedValue string) ([]interface{}, error)
+    // ...
+}
+```
+
+The default index is `MetaNamespaceKeyFunc`, which indexes objects by `namespace/name`. When you call `r.Get(ctx, types.NamespacedName{Name: "foo", Namespace: "bar"}, &obj)`, controller-runtime calls `GetByKey("bar/foo")` on this indexer. No network call.
+
+You can add custom indexes for efficient lookups. In controller-runtime, this looks like:
+
+```go
+mgr.GetFieldIndexer().IndexField(ctx, &corev1.Pod{}, "spec.nodeName",
+    func(obj client.Object) []string {
+        return []string{obj.(*corev1.Pod).Spec.NodeName}
+    },
+)
+
+// Now r.List() with a field selector uses the index instead of scanning every pod
+r.List(ctx, &podList, client.MatchingFields{"spec.nodeName": "node-1"})
+```
+
+This turns O(n) list operations into O(1) lookups. Without the index, `r.List()` with a field matcher would scan every object in the store.
 
 ## Stage 4: The Event Handlers
 
