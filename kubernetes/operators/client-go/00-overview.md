@@ -134,7 +134,9 @@ The Reflector pushes every object it receives -- from the initial list and from 
 
 ## Stage 2: The DeltaFIFO
 
-The DeltaFIFO stores changes as `Delta` objects, each carrying a type and the full Kubernetes object:
+The DeltaFIFO is a temporary queue that sits between the Reflector and the Indexer. The Reflector pushes changes into it, and a consumer pops them out, applies them to the Indexer, and calls event handlers. Once consumed, the deltas are discarded -- the DeltaFIFO is a buffer, not a permanent record.
+
+Each change is stored as a `Delta` object carrying a type and the full Kubernetes object:
 
 ```go
 type DeltaType string
