@@ -178,7 +178,9 @@ If a Pod changes three times before the consumer processes it, `items["default/m
 
 ## Stage 3: The Indexer
 
-The consumer pops items from the DeltaFIFO and applies them to the Indexer -- a thread-safe, indexed in-memory store. The Indexer extends the basic Store interface with indexed lookups:
+The Indexer is the local in-memory store that holds the latest version of every object the informer is watching. It's what controller-runtime's cache reads from. When the consumer pops a delta from the DeltaFIFO, it applies it here: an `Added` delta inserts the object, an `Updated` delta replaces it, a `Deleted` delta removes it. Only the latest version is kept -- there's no history.
+
+The Indexer extends the basic Store interface with indexed lookups:
 
 ```go
 type Store interface {
@@ -218,6 +220,8 @@ This turns O(n) list operations into O(1) lookups. Without the index, `r.List()`
 
 ## Stage 4: The Event Handlers
 
+Event handlers are callbacks that fire after the Indexer is updated. They're how the informer notifies your code that something changed. In raw client-go, you register handler functions directly. In controller-runtime, the Builder registers handlers that route changes to the workqueue.
+
 After updating the store, the informer calls registered `ResourceEventHandler` callbacks:
 
 ```go
@@ -234,7 +238,7 @@ controller-runtime registers handlers that extract the object's key (or the owne
 
 ## Stage 5: The Workqueue ([util/workqueue](https://github.com/kubernetes/client-go/tree/master/util/workqueue))
 
-The handlers don't call Reconcile directly. They push keys onto a rate-limited workqueue. This is the final stage before your code runs.
+The workqueue is a deduplicating, rate-limited queue that sits between the event handlers and your Reconcile function. Its job is to absorb bursts of events, collapse duplicates, and control the rate at which your code processes changes. The handlers don't call Reconcile directly -- they push keys onto this queue, and worker goroutines pop keys off the other end.
 
 client-go provides three queue interfaces, each layering on the previous:
 
