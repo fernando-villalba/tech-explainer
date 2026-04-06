@@ -146,7 +146,7 @@ This is why `GenerationChangedPredicate` in controller-runtime exists. When the 
 
 `OwnerReferences` establish the ownership tree. When a parent is deleted, Kubernetes garbage-collects all objects that have an OwnerReference pointing to it. `controllerutil.SetControllerReference()` in controller-runtime sets this. The multigres-operator's entire resource tree -- MultigresCluster owns Cells, Cells own Shards, Shards own Pods -- is wired through OwnerReferences.
 
-`DeletionTimestamp` is set when someone deletes the object but finalizers are blocking actual removal. If your Reconcile function sees a non-nil `DeletionTimestamp`, the object is being deleted.
+`DeletionTimestamp` is set by the API server when a delete request is received. If the object has no finalizers, deletion happens immediately and you'll never see the timestamp. If the object has finalizers, it stays in the API server in a "terminating" state with `DeletionTimestamp` set until all finalizers are removed. If your Reconcile function sees a non-nil `DeletionTimestamp`, the object is being deleted and you should run cleanup logic.
 
 `Finalizers` are strings that prevent deletion until removed. Add a finalizer to run cleanup logic before an object is garbage-collected. Remove it when cleanup is complete. If a finalizer is never removed, the object gets stuck in `Terminating` state.
 
