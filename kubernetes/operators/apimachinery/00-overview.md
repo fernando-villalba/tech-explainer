@@ -77,7 +77,18 @@ var (
 
 ## TypeMeta and ObjectMeta: The Shape of Every Object ([apis/meta/v1](https://github.com/kubernetes/apimachinery/tree/master/pkg/apis/meta/v1))
 
-Every Kubernetes object embeds two structs.
+Every Kubernetes object has the same top-level shape: TypeMeta, ObjectMeta, Spec, and Status. TypeMeta and ObjectMeta come from apimachinery. Spec and Status are defined by each resource type.
+
+```go
+type MultigresCluster struct {
+    metav1.TypeMeta   `json:",inline"`    // Kind + APIVersion (what type is this)
+    metav1.ObjectMeta `json:"metadata"`   // Name, Namespace, Labels, OwnerRefs, etc.
+    Spec   MultigresClusterSpec   `json:"spec"`     // desired state (what the user wants)
+    Status MultigresClusterStatus `json:"status"`   // observed state (what the controller reports)
+}
+```
+
+TypeMeta and ObjectMeta are the same for every resource. Spec and Status are unique to each type. apimachinery defines the first two. Your operator defines the other two.
 
 **TypeMeta** carries the GVK as wire-format fields:
 
