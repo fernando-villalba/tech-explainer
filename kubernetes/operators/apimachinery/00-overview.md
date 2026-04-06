@@ -18,9 +18,29 @@ schema.GroupVersionKind{
 }
 ```
 
-**GroupVersionResource (GVR)** identifies a *REST endpoint*. Group and version are the same. Resource is the lowercase plural form (`pods`, `deployments`, `multigresclusters`). A GVR tells you *where to find it* on the API server. `GET /apis/multigres.com/v1alpha1/namespaces/default/multigresclusters` -- that URL is the GVR plus namespace.
+**GroupVersionResource (GVR)** identifies a *REST endpoint*. Group and version are the same. Resource is the lowercase plural form (`pods`, `deployments`, `multigresclusters`). A GVR tells you *where to find it* on the API server.
 
-GVK and GVR are related but not identical. The Kind is `MultigresCluster`. The Resource is `multigresclusters`. The mapping between them (pluralization, aliasing) is handled by the REST mapper. Most of the time you work with GVKs in Go code and GVRs are resolved automatically.
+```go
+schema.GroupVersionResource{
+    Group:    "multigres.com",
+    Version:  "v1alpha1",
+    Resource: "multigresclusters",
+}
+// Maps to: GET /apis/multigres.com/v1alpha1/namespaces/default/multigresclusters
+```
+
+For core types (Pods, Services, ConfigMaps), the group is empty and the URL path uses `/api/v1` instead of `/apis/group/version`:
+
+```go
+schema.GroupVersionResource{
+    Group:    "",       // core group
+    Version:  "v1",
+    Resource: "pods",
+}
+// Maps to: GET /api/v1/namespaces/default/pods
+```
+
+GVK and GVR are related but not identical. The Kind is `MultigresCluster` (singular, CamelCase). The Resource is `multigresclusters` (plural, lowercase). The mapping between them (pluralization, aliasing) is handled by the REST mapper. Most of the time you work with GVKs in Go code and GVRs are resolved automatically.
 
 ## The Scheme: A Registry of Known Types ([runtime](https://github.com/kubernetes/apimachinery/tree/master/pkg/runtime))
 
