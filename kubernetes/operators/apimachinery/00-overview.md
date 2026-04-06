@@ -121,9 +121,28 @@ type ObjectMeta struct {
 
 The fields that matter most for operator development:
 
-`ResourceVersion` is the optimistic concurrency token. Every update must include it. If it doesn't match the server's version, you get a Conflict error. This is how Kubernetes prevents lost updates.
+`ResourceVersion` and `Generation` both look like version numbers but track different things.
 
-`Generation` increments only when the spec changes, not on status-only updates. `GenerationChangedPredicate` in controller-runtime uses this to skip reconciliation when only the status was updated.
+`ResourceVersion` is set by etcd (the database Kubernetes stores everything in). It's a string like `"12345678"` that changes on *every* write to the object -- spec changes, status changes, label changes, annotation changes, anything. It's not a version of the resource. It's a version of the record in the database. When you read an object with `ResourceVersion: "1000"` and try to update it, but someone else already updated it (making it `"1001"`), the API server rejects the write with a 409 Conflict. No locks, just "did anyone else touch this since I last read it?"
+
+`Generation` is set by the API server. It's an integer (`1`, `2`, `3`) that only increments when the **spec** changes. Status updates, label changes, annotation changes -- Generation stays the same.
+
+The difference becomes clear over time:
+
+```
+Action                          ResourceVersion    Generation
+─────────────────────────────────────────────────────────────
+Create MultigresCluster              1000              1
+Update spec (add a cell)             1001              2
+Controller updates status            1002              2  ← same
+Add a label                          1003              2  ← same
+Update spec (change storage)         1004              3
+Controller updates status            1005              3  ← same
+```
+
+ResourceVersion changes on every row. Generation only changes when the spec changes.
+
+This is why `GenerationChangedPredicate` in controller-runtime exists. When the controller updates status (ResourceVersion 1001 -> 1002), the informer sees a change and would normally trigger reconciliation. But Generation is still 2, so the predicate filters it out. Only spec changes (Generation 1->2, 2->3) pass through. Without this predicate, every status update would cause an infinite reconciliation loop: controller updates status -> informer sees change -> triggers Reconcile -> controller updates status -> and so on.
 
 `OwnerReferences` establish the ownership tree. When a parent is deleted, Kubernetes garbage-collects all objects that have an OwnerReference pointing to it. `controllerutil.SetControllerReference()` in controller-runtime sets this. The multigres-operator's entire resource tree -- MultigresCluster owns Cells, Cells own Shards, Shards own Pods -- is wired through OwnerReferences.
 
